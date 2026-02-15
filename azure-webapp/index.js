@@ -167,18 +167,37 @@ Call SID: ${call_sid}
 `;
     logInteraction(logEntry.trim());
 
+    let transferStatus = 'not_attempted';
+    let transferError = null;
+
     if (call_sid && toNumber) {
       try {
         await transferCall(call_sid, toNumber);
         console.log(`[Twilio] Call transfer initiated to ${toNumber}`);
         logInteraction(`Call transferred to ${toNumber}`);
+        transferStatus = 'success';
       } catch (transferErr) {
         console.error(`[Twilio] Transfer failed, but email was sent: ${transferErr.message}`);
         logInteraction(`[ERROR] Transfer failed (email was sent): ${transferErr.message}`);
+        transferStatus = 'failed';
+        transferError = transferErr.message;
       }
+    } else if (!toNumber) {
+      transferStatus = 'failed';
+      transferError = 'No phone number found for this staff member';
     }
 
-    res.status(200).send('OK');
+    res.status(200).json({
+      status: 'ok',
+      email_sent: true,
+      transfer_status: transferStatus,
+      transfer_error: transferError,
+      message: transferStatus === 'success'
+        ? 'Email sent and call transfer initiated successfully.'
+        : transferStatus === 'failed'
+          ? `Email sent but call transfer failed: ${transferError}. Please ask the caller if they would like to leave a message.`
+          : 'Email sent. No transfer was attempted.'
+    });
   } catch (err) {
     console.error('[Error] Failed to process /send-email:', err.message);
     logInteraction(`[ERROR] ${err.message}`);

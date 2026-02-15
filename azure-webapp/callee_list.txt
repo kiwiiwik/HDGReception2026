@@ -17,7 +17,6 @@ Jomer Costales,jomer.costales@gibbonsrail.co.nz,+64223946424,Leading Hand
 Karl Donovan,karl.donovan@gibbonsrail.co.nz,+64278389500,Director
 Mika Saolotoga,mika.saolotoga@hdg.co.nz,+64226392657,Leading Hand
 Mike Harris,mike.harris@hdg.co.nz,+64274973352,Director
-Paul McGahan,paul.mcgahan@gibbonsrail.co.nz,+64225558743,Health and Safety Administrator
 Pita Wilson,pita.wilson@hdg.co.nz,+6421842274,Site Manager
 Ravi Teja Koralla (Ravi),raviteja.koralla@totalrailsolutions.co.nz,+64225004034,Senior Project Engineer
 Rod Grant,rod.grant@hdg.co.nz,+6421747268,IT Manager
@@ -28,4 +27,3 @@ Steve Coleman,steve.coleman@hdg.co.nz,+64226581054,Site Foreman
 Susan Liu,susan.liu@hdg.co.nz,,Management Accountant (no longer active - redirect to Diana Chichester)
 Toan Nguyen,toan.nguyen@hdg.co.nz,+64220110194,Quantity Surveyor / Engineer
 Willie Fotu,willie.fotu@hdg.co.nz,+64274654667,Site Supervisor
-John Doe,rod.grant@i6.co.nz,+6421747268,Photographer

@@ -23,9 +23,9 @@ Ravi Teja Koralla (Ravi),raviteja.koralla@totalrailsolutions.co.nz,+64225004034,
 Rod Grant,rod.grant@hdg.co.nz,+6421747268,IT Manager
 Ron Williams,ron.williams@gibbonsrail.co.nz,+6421908610,Director
 Sarwindar Sandhu,Sarwindar.Sandhu@totalrailsolutions.co.nz,+64272134703,General Manager
-Shaun  Harris,shaun.harris@gibbonsrail.co.nz,+64275362272,
+Shaun Harris,shaun.harris@gibbonsrail.co.nz,+64275362272,
 Steve Coleman,steve.coleman@hdg.co.nz,+64226581054,Site Foreman
-Susan Liu,susan.liu@hdg.co.nz,+64220453479,Management Accountant
+Susan Liu,susan.liu@hdg.co.nz,,Management Accountant (no longer active - redirect to Diana Chichester)
 Toan Nguyen,toan.nguyen@hdg.co.nz,+64220110194,Quantity Surveyor / Engineer
 Willie Fotu,willie.fotu@hdg.co.nz,+64274654667,Site Supervisor
 John Doe,rod.grant@i6.co.nz,+6421747268,Photographer

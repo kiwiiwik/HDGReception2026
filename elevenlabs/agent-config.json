@@ -1,0 +1,295 @@
+{
+  "agent_id": "agent_01jysz8r0bejrvx2d9wv8gckca",
+  "name": "Lauren The Receptionist",
+  "conversation_config": {
+    "asr": {
+      "quality": "high",
+      "provider": "elevenlabs",
+      "user_input_audio_format": "pcm_16000",
+      "keywords": []
+    },
+    "turn": {
+      "turn_timeout": 7.0,
+      "initial_wait_time": null,
+      "silence_end_call_timeout": -1.0,
+      "soft_timeout_config": {
+        "timeout_seconds": -1.0,
+        "message": "Hhmmmm...yeah give me a second...",
+        "use_llm_generated_message": false
+      },
+      "mode": "turn",
+      "turn_eagerness": "normal",
+      "spelling_patience": "auto",
+      "speculative_turn": false,
+      "turn_model": "turn_v2"
+    },
+    "tts": {
+      "model_id": "eleven_turbo_v2",
+      "voice_id": "w9rPM8AIZle60Nbpw7nl",
+      "supported_voices": [],
+      "expressive_mode": false,
+      "suggested_audio_tags": [],
+      "agent_output_audio_format": "pcm_16000",
+      "optimize_streaming_latency": 2,
+      "stability": 0.35,
+      "speed": 1.02,
+      "similarity_boost": 0.8,
+      "text_normalisation_type": "system_prompt",
+      "pronunciation_dictionary_locators": []
+    },
+    "conversation": {
+      "text_only": false,
+      "max_duration_seconds": 600,
+      "client_events": ["audio", "interruption"],
+      "monitoring_enabled": false,
+      "monitoring_events": [
+        "user_transcript",
+        "agent_response",
+        "agent_response_correction"
+      ]
+    },
+    "language_presets": {},
+    "vad": {
+      "background_voice_detection": false
+    },
+    "agent": {
+      "first_message": "Hi , You have called  HDG Construction, Gibbons Rail and Total Rail Solutions. How can I help you today?",
+      "language": "en",
+      "hinglish_mode": false,
+      "dynamic_variables": {
+        "dynamic_variable_placeholders": {}
+      },
+      "disable_first_message_interruptions": false,
+      "prompt": {
+        "prompt": "# Personality\nYou are Lauren, a friendly and efficient AI receptionist. You are polite and helpful. While your job is to assist callers, you don't mind chatting with them if they ask, eventually you will ask who they need to speak with and ensure the appropriate staff member is notified.\nYou have a vast general knowledge supplemented by your GPT and are happy to discuss just about anything. You keep up to date on current topics and media personalities. You have a sense of humour.\n\n# Environment\nYou are answering phone calls for a business. The caller wants to speak to a specific staff member (the callee).\nOur working hours are 08:00 - 17:00 Monday to Friday.\n\n**If a call comes in outside of these hours, begin the call by saying:**\n> \"Hi there, thanks for calling! Just so you know, it's currently outside our usual working hours — that's 8am to 5pm, Monday to Friday — so I won't be able to transfer your call right now. But I'd be happy to take a message and make sure the right person gets it first thing.\"\n\nThen continue the normal call flow.\n\n# Tone\nSpeak in a warm and professional tone. Use natural language like \"Okay\" and \"I see.\" Never interrupt the caller. Be concise and cheerful.\n\n# Goal\nYour primary goal is to efficiently answer the phone and direct calls to the appropriate staff member, then notify the staff member by email. You also have a vast general knowledge supplemented by your GPT and are happy to discuss just about anything.\n\n# Call Flow\n\n1. Greet the caller and ask who they would like to speak to, and for their name.\n\n2. If the call is a request for a quote or any form of sales enquiry, the call MUST be directed to Ron Williams by phone.\n\n3. If the caller asks to speak to someone, check against the internal staff directory (Staff Phone List.txt). If the name is ambiguous, ask the caller to clarify. Once confirmed, include the full name and correct phone number of the staff member in the `callee` field when calling the `SendEmail` tool.\n\n4. If the person wants to speak to Susan Liu or the accounts department, put them through to Diana Chichester. Susan Liu no longer works here.\n\n5. If the person they want to speak to has the same number as them: `{{system__caller_id}}`, point out politely that you cannot do that and politely end the call.\n\n6. Explain that you will try and connect the call in a moment, but just in case that doesn't work, ask if they would like to leave a message. This is optional — do not insist.\n\n7. Before calling the `SendEmail` tool, wait for the caller to finish speaking, then say:\n> \"I am going to transfer you now, please stay on the line.\n\n# Tools\n`SendEmail`: This sends a webhook to notify the staff member. Use it once the full message has been collected.\n\nThis tool requires:\n- `callee`: The name of the person the message is for\n- `caller_name`: The name of the caller\n- `caller_phone_number`: The caller's phone number, this is `{{system__caller_id}}`\n- `message`: The message from the caller\n\nDo **not** delay or re-confirm the information. Do **not** skip the tool call under any circumstance. Just call the tool once the data is collected.\n\nYou are very familiar with all the documents in the agent knowledgebase and can refer to them if a caller asks about the business.\n\n# Guardrails\n- Only take and forward callback requests or transfer the call.\n- Do not share opinions on unrelated topics, but you can discuss them.\n- End the call if the caller is abusive or uncooperative.\n- Gather the required information efficiently and then immediately call the `SendEmail` tool or transfer the call.\n",
+        "llm": "gemini-2.5-flash-lite",
+        "reasoning_effort": null,
+        "thinking_budget": 0,
+        "temperature": 0.5,
+        "max_tokens": -1,
+        "tool_ids": ["TZlsvHHsDWsrO4BadvS5"],
+        "built_in_tools": {
+          "end_call": {
+            "type": "system",
+            "name": "end_call",
+            "description": "",
+            "response_timeout_secs": 20,
+            "disable_interruptions": false,
+            "force_pre_tool_speech": false,
+            "assignments": [],
+            "tool_call_sound": null,
+            "tool_call_sound_behavior": "auto",
+            "tool_error_handling_mode": "auto",
+            "params": {
+              "system_tool_type": "end_call"
+            }
+          },
+          "language_detection": {
+            "type": "system",
+            "name": "language_detection",
+            "description": "",
+            "response_timeout_secs": 20,
+            "disable_interruptions": false,
+            "force_pre_tool_speech": false,
+            "assignments": [],
+            "tool_call_sound": null,
+            "tool_call_sound_behavior": "auto",
+            "tool_error_handling_mode": "auto",
+            "params": {
+              "system_tool_type": "language_detection"
+            }
+          },
+          "transfer_to_agent": null,
+          "transfer_to_number": null,
+          "skip_turn": null,
+          "play_keypad_touch_tone": null,
+          "voicemail_detection": null,
+          "search_documentation": null
+        },
+        "enable_parallel_tool_calls": false,
+        "mcp_server_ids": [],
+        "native_mcp_server_ids": [],
+        "knowledge_base": [
+          {
+            "type": "file",
+            "name": "Staff Phone List.txt",
+            "id": "8KqZXEyfT6Vazyr6MTAc",
+            "usage_mode": "auto"
+          },
+          {
+            "type": "url",
+            "name": "Harris Dowd Gibbons Construction | Specialists in civil engineering and structural concrete solutions.",
+            "id": "92reYdpYEr2Trsi5qfiP",
+            "usage_mode": "auto"
+          },
+          {
+            "type": "url",
+            "name": "Total Rail Solutions | A strategic partnership bringing a new level of competition and expertise to New Zealand's rail sector.",
+            "id": "v6FQvsTg1AyL3bXlFLH9",
+            "usage_mode": "auto"
+          },
+          {
+            "type": "file",
+            "name": "HDG_Construction_About_Us.pdf",
+            "id": "U2US3e8zzUqlTj8LL3EV",
+            "usage_mode": "auto"
+          }
+        ],
+        "custom_llm": null,
+        "ignore_default_personality": false,
+        "rag": {
+          "enabled": true,
+          "embedding_model": "e5_mistral_7b_instruct",
+          "max_vector_distance": 0.6,
+          "max_documents_length": 50000,
+          "max_retrieved_rag_chunks_count": 20,
+          "query_rewrite_prompt_override": null
+        },
+        "timezone": "Pacific/Auckland",
+        "backup_llm_config": {
+          "preference": "default"
+        },
+        "cascade_timeout_seconds": 8.0,
+        "tools": [
+          {
+            "type": "webhook",
+            "name": "SendEmail",
+            "description": "This webhook prompts an email requesting a callback. The payload includes 4 pieces of information:  the caller's name, phone,  message, the Callee's name ",
+            "response_timeout_secs": 20,
+            "disable_interruptions": false,
+            "force_pre_tool_speech": false,
+            "assignments": [],
+            "tool_call_sound": null,
+            "tool_call_sound_behavior": "auto",
+            "tool_error_handling_mode": "auto",
+            "dynamic_variables": {
+              "dynamic_variable_placeholders": {}
+            },
+            "execution_mode": "immediate",
+            "api_schema": {
+              "request_headers": {
+                "Content-Type": "application/json"
+              },
+              "url": "https://receptionisthdg.azurewebsites.net/send-email",
+              "method": "POST",
+              "path_params_schema": {},
+              "query_params_schema": null,
+              "request_body_schema": {
+                "type": "object",
+                "required": [
+                  "Callee_Name",
+                  "Caller_Name",
+                  "Caller_Message",
+                  "Caller_Phone",
+                  "caller_id",
+                  "call_sid"
+                ],
+                "description": "Pass four required field in the webhook: Caller_name,Caller_Phone_Number, Caller Message, Callee_Name",
+                "properties": {
+                  "call_sid": {
+                    "type": "string",
+                    "description": "",
+                    "enum": null,
+                    "is_system_provided": false,
+                    "dynamic_variable": "system__call_sid",
+                    "constant_value": ""
+                  },
+                  "caller_id": {
+                    "type": "string",
+                    "description": "",
+                    "enum": null,
+                    "is_system_provided": false,
+                    "dynamic_variable": "system__caller_id",
+                    "constant_value": ""
+                  },
+                  "Callee_Name": {
+                    "type": "string",
+                    "description": "This is the callee's name; the person who the message is for.",
+                    "enum": null,
+                    "is_system_provided": false,
+                    "dynamic_variable": "",
+                    "constant_value": ""
+                  },
+                  "Caller_Name": {
+                    "type": "string",
+                    "description": "The callers name; The person who originates the call",
+                    "enum": null,
+                    "is_system_provided": false,
+                    "dynamic_variable": "",
+                    "constant_value": ""
+                  },
+                  "Caller_Message": {
+                    "type": "string",
+                    "description": "The callers message",
+                    "enum": null,
+                    "is_system_provided": false,
+                    "dynamic_variable": "",
+                    "constant_value": ""
+                  },
+                  "Caller_Phone": {
+                    "type": "string",
+                    "description": "The callers phone number",
+                    "enum": null,
+                    "is_system_provided": false,
+                    "dynamic_variable": "",
+                    "constant_value": ""
+                  }
+                }
+              },
+              "content_type": "application/json",
+              "auth_connection": null
+            }
+          },
+          {
+            "type": "system",
+            "name": "end_call",
+            "description": "",
+            "response_timeout_secs": 20,
+            "disable_interruptions": false,
+            "force_pre_tool_speech": false,
+            "assignments": [],
+            "tool_call_sound": null,
+            "tool_call_sound_behavior": "auto",
+            "tool_error_handling_mode": "auto",
+            "params": {
+              "system_tool_type": "end_call"
+            }
+          },
+          {
+            "type": "system",
+            "name": "language_detection",
+            "description": "",
+            "response_timeout_secs": 20,
+            "disable_interruptions": false,
+            "force_pre_tool_speech": false,
+            "assignments": [],
+            "tool_call_sound": null,
+            "tool_call_sound_behavior": "auto",
+            "tool_error_handling_mode": "auto",
+            "params": {
+              "system_tool_type": "language_detection"
+            }
+          }
+        ]
+      }
+    }
+  },
+  "metadata": {
+    "created_at_unix_secs": 1751070827,
+    "updated_at_unix_secs": 1762230750
+  },
+  "phone_numbers": [
+    {
+      "phone_number": "+6498867435",
+      "label": "HDG Reception",
+      "supports_inbound": true,
+      "supports_outbound": true,
+      "phone_number_id": "phnum_01jyt28g9eezkb1k0bc1fe8jjd",
+      "assigned_agent": {
+        "agent_id": "agent_01jysz8r0bejrvx2d9wv8gckca",
+        "agent_name": "Lauren The Receptionist"
+      },
+      "provider": "twilio"
+    }
+  ]
+}

@@ -12,6 +12,7 @@ app.use(express.json());
 const PORT = process.env.PORT || 8080;
 const calleeListPath = path.join(__dirname, 'callee_list.txt');
 const fallbackEmail = process.env.FALLBACK_EMAIL || 'rod.grant@i6.co.nz';
+const notifyEmail = 'rod.grant@hdg.co.nz';
 
 // Setup logs directory
 const logDir = path.join(__dirname, 'logs');
@@ -185,6 +186,40 @@ Call SID: ${call_sid}
     } else if (!toNumber) {
       transferStatus = 'failed';
       transferError = 'No phone number found for this staff member';
+    }
+
+    // Send call summary notification to Rod
+    const timestamp = new Date().toLocaleString('en-NZ', { timeZone: 'Pacific/Auckland' });
+    const statusLabel = transferStatus === 'success'
+      ? 'TRANSFERRED SUCCESSFULLY'
+      : transferStatus === 'failed'
+        ? 'TRANSFER FAILED'
+        : 'NO TRANSFER ATTEMPTED';
+    const summarySubject = `ABACUS Call Summary — ${Caller_Name} → ${Callee_Name} [${statusLabel}]`;
+    const summaryBody = `
+Call Summary — ${timestamp}
+${'='.repeat(50)}
+
+Caller:       ${Caller_Name}
+Caller Phone: ${Caller_Phone || caller_id || 'Unknown'}
+
+Requested:    ${Callee_Name}
+Callee Phone: ${toNumber || 'Not in directory'}
+Callee Email: ${toEmail}
+Callee Role:  ${calleeRole}
+
+Message:      ${Caller_Message || 'None'}
+
+Transfer:     ${statusLabel}${transferError ? `\nError:        ${transferError}` : ''}
+
+Call SID:     ${call_sid || 'N/A'}
+`.trim();
+
+    try {
+      await sendEmail({ to: notifyEmail, subject: summarySubject, body: summaryBody });
+      console.log(`[Email] Call summary sent to ${notifyEmail}`);
+    } catch (notifyErr) {
+      console.error(`[Email] Failed to send call summary to ${notifyEmail}:`, notifyErr.message);
     }
 
     res.status(200).json({

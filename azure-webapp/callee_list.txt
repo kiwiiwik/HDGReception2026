@@ -1,0 +1,31 @@
+Name,email,phone,role
+Aholoka Afu,Aholoka.Afu@gibbonsrail.co.nz,,Leading Hand
+Arol Lucindo,arol.lucindo@gibbonsrail.co.nz,+64275638123,Leading Hand
+Dave Ballard,dave.ballard@hdg.co.nz,+6421842278,Operations Manager
+David Harris,david.harris@hdg.co.nz,+64272363388,Supervisor
+Diana Chichester,diana.chichester@hdg.co.nz,+64220453479,
+Feiloeua Tuipulotu,feiloeua.tuipulotu@gibbonsrail.co.nz,+64211801904,Leading Hand Track
+Fiona Kier,fiona.kier@hdg.co.nz,+64274325585,Administrator / QA
+Grace Nguyen,grace.nguyen@hdg.co.nz,+64226820267,Company Secretary/HR Advisor
+Graham Dowd,graham.dowd@hdg.co.nz,+64272938207,Director
+Hannah Duong,hannah.duong@hdg.co.nz,+642902090155,Quantity Surveyor
+Jack Reed,jack.reed@gibbonsrail.co.nz,+64274819251,General Superintendent
+Jay Nair,jay.nair@gibbonsrail.co.nz,+64225554172,Project Engineer
+Jesse Paul,Jesse.Paul@totalrailsolutions.co.nz,+6421864802,Project Engineer
+John Kauvai,john.kauvai@totalrailsolutions.co.nz,+64274940012,General Superintendent
+Jomer Costales,jomer.costales@gibbonsrail.co.nz,+64223946424,Leading Hand
+Karl Donovan,karl.donovan@gibbonsrail.co.nz,+64278389500,Director
+Mika Saolotoga,mika.saolotoga@hdg.co.nz,+64226392657,Leading Hand
+Mike Harris,mike.harris@hdg.co.nz,+64274973352,Director
+Paul McGahan,paul.mcgahan@gibbonsrail.co.nz,+64225558743,Health and Safety Administrator
+Pita Wilson,pita.wilson@hdg.co.nz,+6421842274,Site Manager
+Ravi Teja Koralla (Ravi),raviteja.koralla@totalrailsolutions.co.nz,+64225004034,Senior Project Engineer
+Rod Grant,rod.grant@hdg.co.nz,+6421747268,IT Manager
+Ron Williams,ron.williams@gibbonsrail.co.nz,+6421908610,Director
+Sarwindar Sandhu,Sarwindar.Sandhu@totalrailsolutions.co.nz,+64272134703,General Manager
+Shaun  Harris,shaun.harris@gibbonsrail.co.nz,+64275362272,
+Steve Coleman,steve.coleman@hdg.co.nz,+64226581054,Site Foreman
+Susan Liu,susan.liu@hdg.co.nz,+64220453479,Management Accountant
+Toan Nguyen,toan.nguyen@hdg.co.nz,+64220110194,Quantity Surveyor / Engineer
+Willie Fotu,willie.fotu@hdg.co.nz,+64274654667,Site Supervisor
+John Doe,rod.grant@i6.co.nz,+6421747268,Photographer

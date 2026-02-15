@@ -345,12 +345,14 @@ app.post('/call-ended', async (req, res) => {
       return;
     }
 
-    // Format transcript
-    const formattedTranscript = transcript.map(turn => {
-      const speaker = turn.role === 'agent' ? 'Lauren' : 'Caller';
-      const timeStr = turn.time_in_call_secs != null ? `[${formatTime(turn.time_in_call_secs)}]` : '';
-      return `${timeStr} ${speaker}: ${turn.message}`;
-    }).join('\n\n');
+    // Format transcript, filtering out null/empty tool-call entries
+    const formattedTranscript = transcript
+      .filter(turn => turn.message && turn.message !== 'null')
+      .map(turn => {
+        const speaker = turn.role === 'agent' ? 'Lauren' : 'Caller';
+        const timeStr = turn.time_in_call_secs != null ? `[${formatTime(turn.time_in_call_secs)}]` : '';
+        return `${timeStr} ${speaker}: ${turn.message}`;
+      }).join('\n\n');
 
     // Build email
     const timestamp = new Date().toLocaleString('en-NZ', { timeZone: 'Pacific/Auckland' });

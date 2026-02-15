@@ -81,6 +81,10 @@ function getValidPhoneNumbers() {
 
 let validPhoneNumbers = getValidPhoneNumbers();
 
+// MessageMedia SMS credentials
+const MESSAGEMEDIA_API_KEY = process.env.MESSAGEMEDIA_API_KEY;
+const MESSAGEMEDIA_API_SECRET = process.env.MESSAGEMEDIA_API_SECRET;
+
 // Reusable SMTP transporter
 const transporter = nodemailer.createTransport({
   host: 'mail.smtp2go.com',
@@ -99,6 +103,33 @@ async function sendEmail({ to, subject, body }) {
     subject,
     text: body
   });
+}
+
+// Send SMS via MessageMedia API
+async function sendSms({ to, body }) {
+  const response = await axios.post(
+    'https://api.messagemedia.com/v1/messages',
+    {
+      messages: [
+        {
+          content: body,
+          destination_number: to,
+          format: 'SMS'
+        }
+      ]
+    },
+    {
+      auth: {
+        username: MESSAGEMEDIA_API_KEY,
+        password: MESSAGEMEDIA_API_SECRET
+      },
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      }
+    }
+  );
+  return response.data;
 }
 
 // Call transfer via Twilio REST API
@@ -258,6 +289,66 @@ Call SID:     ${call_sid || 'N/A'}
     console.error('[Error] Failed to process /transfer-call:', err.message);
     logInteraction(`[ERROR] ${err.message}`);
     res.status(500).send('Failed to process transfer');
+  }
+});
+
+// Webhook: /send-text — Send an SMS to the caller via MessageMedia
+app.post('/send-text', async (req, res) => {
+  try {
+    console.log('[SendText] Payload:', req.body);
+    const { to_phone, message, caller_id } = req.body;
+
+    const phone = to_phone || caller_id;
+
+    if (!phone || !message) {
+      console.error('[SendText] Missing required fields:', { to_phone, message, caller_id });
+      return res.status(400).send('Missing required fields: to_phone (or caller_id) and message');
+    }
+
+    if (!MESSAGEMEDIA_API_KEY || !MESSAGEMEDIA_API_SECRET) {
+      console.error('[SendText] MessageMedia credentials not configured');
+      return res.status(500).send('SMS service not configured');
+    }
+
+    // Send the SMS
+    const smsResult = await sendSms({ to: phone, body: message });
+    console.log('[SendText] SMS sent:', smsResult);
+
+    logInteraction(`[SendText] SMS to ${phone}: ${message}`);
+
+    // Notify Rod by email
+    const timestamp = new Date().toLocaleString('en-NZ', { timeZone: 'Pacific/Auckland' });
+    const summarySubject = `LAUREN 2.0 SMS Sent to ${phone}`;
+    const summaryBody = `
+SMS Sent — ${timestamp}
+${'='.repeat(50)}
+
+To:      ${phone}
+Message: ${message}
+
+Caller ID: ${caller_id || 'N/A'}
+`.trim();
+
+    try {
+      await sendEmail({ to: notifyEmail, subject: summarySubject, body: summaryBody });
+      console.log(`[SendText] Summary sent to ${notifyEmail}`);
+    } catch (notifyErr) {
+      console.error(`[SendText] Failed to send summary email: ${notifyErr.message}`);
+    }
+
+    res.status(200).json({
+      status: 'ok',
+      sms_sent: true,
+      message: 'Text message has been sent successfully.'
+    });
+  } catch (err) {
+    console.error('[Error] Failed to process /send-text:', err.message);
+    logInteraction(`[ERROR] SendText failed: ${err.message}`);
+    res.status(200).json({
+      status: 'error',
+      sms_sent: false,
+      message: `Failed to send text message: ${err.message}. Please apologise and let the caller know we were unable to text them.`
+    });
   }
 });
 

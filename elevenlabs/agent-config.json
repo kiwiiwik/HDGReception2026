@@ -9,18 +9,18 @@
       "keywords": []
     },
     "turn": {
-      "turn_timeout": 7.0,
+      "turn_timeout": 2.0,
       "initial_wait_time": null,
       "silence_end_call_timeout": -1.0,
       "soft_timeout_config": {
-        "timeout_seconds": -1.0,
-        "message": "Hhmmmm...yeah give me a second...",
-        "use_llm_generated_message": false
+        "timeout_seconds": 3.0,
+        "message": "I am sorry - please give me a moment...",
+        "use_llm_generated_message": true
       },
       "mode": "turn",
-      "turn_eagerness": "normal",
+      "turn_eagerness": "eager",
       "spelling_patience": "auto",
-      "speculative_turn": false,
+      "speculative_turn": true,
       "turn_model": "turn_v2"
     },
     "tts": {

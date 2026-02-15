@@ -217,6 +217,20 @@ app.post('/reload-directory', (req, res) => {
   }
 });
 
+// Health check / keep-alive endpoint
+app.get('/health', (req, res) => {
+  res.status(200).json({
+    status: 'ok',
+    callees: Object.keys(calleeDirectory).length,
+    uptime: process.uptime()
+  });
+});
+
+// Root endpoint
+app.get('/', (req, res) => {
+  res.status(200).send('HDG Reception - Running');
+});
+
 // Start server
 app.listen(PORT, () => {
   console.log(`[Startup] Listening on port ${PORT}`);

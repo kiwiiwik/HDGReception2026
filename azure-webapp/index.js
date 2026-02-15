@@ -81,6 +81,10 @@ function getValidPhoneNumbers() {
 
 let validPhoneNumbers = getValidPhoneNumbers();
 
+// MessageMedia SMS credentials
+const MESSAGEMEDIA_API_KEY = process.env.MESSAGEMEDIA_API_KEY;
+const MESSAGEMEDIA_API_SECRET = process.env.MESSAGEMEDIA_API_SECRET;
+
 // Reusable SMTP transporter
 const transporter = nodemailer.createTransport({
   host: 'mail.smtp2go.com',
@@ -99,6 +103,33 @@ async function sendEmail({ to, subject, body }) {
     subject,
     text: body
   });
+}
+
+// Send SMS via MessageMedia API
+async function sendSms({ to, body }) {
+  const response = await axios.post(
+    'https://api.messagemedia.com/v1/messages',
+    {
+      messages: [
+        {
+          content: body,
+          destination_number: to,
+          format: 'SMS'
+        }
+      ]
+    },
+    {
+      auth: {
+        username: MESSAGEMEDIA_API_KEY,
+        password: MESSAGEMEDIA_API_SECRET
+      },
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      }
+    }
+  );
+  return response.data;
 }
 
 // Call transfer via Twilio REST API
@@ -134,34 +165,207 @@ async function transferCall(callSid, toNumber) {
   }
 }
 
-// Webhook: /send-email
-app.post('/send-email', async (req, res) => {
+// Shared helper: look up callee and store call context
+function resolveCallee(Callee_Name) {
+  const calleeInfo = calleeDirectory[Callee_Name.toLowerCase()];
+  if (!calleeInfo) {
+    console.warn(`[Webhook] Callee not found in directory: "${Callee_Name}", using fallback email`);
+  }
+  return {
+    toEmail: calleeInfo?.email || fallbackEmail,
+    toNumber: calleeInfo?.phone,
+    calleeRole: calleeInfo?.role || 'Unknown',
+    found: !!calleeInfo
+  };
+}
+
+function storeCallContext(call_sid, Callee_Name, Caller_Name, Caller_Phone, caller_id) {
+  if (call_sid) {
+    activeCallStore.set(call_sid, {
+      callee_name: Callee_Name,
+      caller_name: Caller_Name,
+      caller_phone: Caller_Phone || caller_id,
+      timestamp: Date.now()
+    });
+  }
+}
+
+// Webhook: /transfer-call — Business hours: transfer the caller to a staff member
+app.post('/transfer-call', async (req, res) => {
   try {
-    console.log('[Webhook] Payload:', req.body);
-    const {
-      Callee_Name,
-      Caller_Name,
-      Caller_Phone,
-      Caller_Message,
-      caller_id,
-      call_sid
-    } = req.body;
+    console.log('[TransferCall] Payload:', req.body);
+    const { Callee_Name, Caller_Name, Caller_Phone, caller_id, call_sid } = req.body;
 
     if (!Callee_Name || !Caller_Name) {
-      console.error('[Webhook] Missing required fields:', { Callee_Name, Caller_Name });
+      console.error('[TransferCall] Missing required fields:', { Callee_Name, Caller_Name });
       return res.status(400).send('Missing required fields: Callee_Name, Caller_Name');
     }
 
-    const calleeInfo = calleeDirectory[Callee_Name.toLowerCase()];
-    const toEmail = calleeInfo?.email || fallbackEmail;
-    const toNumber = calleeInfo?.phone;
-    const calleeRole = calleeInfo?.role || 'Unknown';
+    const { toEmail, toNumber, calleeRole } = resolveCallee(Callee_Name);
 
-    if (!calleeInfo) {
-      console.warn(`[Webhook] Callee not found in directory: "${Callee_Name}", using fallback email`);
+    // Notify callee by email that a call is being transferred
+    const subject = `LAUREN 2.0 Incoming call from ${Caller_Name}`;
+    const body = `
+Callee: ${Callee_Name}
+Callee Phone: ${toNumber || 'Unknown'}
+Callee Role: ${calleeRole}
+
+Caller Name: ${Caller_Name}
+Caller Phone: ${Caller_Phone}
+
+Call is being transferred now.
+
+Caller ID (from Twilio): ${caller_id}
+Call SID: ${call_sid}
+`.trim();
+
+    await sendEmail({ to: toEmail, subject, body });
+    console.log(`[TransferCall] Notification sent to ${toEmail}`);
+
+    logInteraction(`[TransferCall] ${Caller_Name} → ${Callee_Name} | Sent to: ${toEmail} | Call SID: ${call_sid}`);
+
+    storeCallContext(call_sid, Callee_Name, Caller_Name, Caller_Phone, caller_id);
+
+    // Attempt Twilio call transfer
+    let transferStatus = 'not_attempted';
+    let transferError = null;
+
+    if (call_sid && toNumber) {
+      try {
+        await transferCall(call_sid, toNumber);
+        console.log(`[Twilio] Call transfer initiated to ${toNumber}`);
+        logInteraction(`[TransferCall] Transferred to ${toNumber}`);
+        transferStatus = 'success';
+      } catch (transferErr) {
+        console.error(`[Twilio] Transfer failed: ${transferErr.message}`);
+        logInteraction(`[ERROR] Transfer failed: ${transferErr.message}`);
+        transferStatus = 'failed';
+        transferError = transferErr.message;
+      }
+    } else if (!toNumber) {
+      transferStatus = 'failed';
+      transferError = 'No phone number found for this staff member';
     }
 
-    const subject = `ABACUS New message for ${Callee_Name}`;
+    // Send call summary notification to Rod
+    const timestamp = new Date().toLocaleString('en-NZ', { timeZone: 'Pacific/Auckland' });
+    const statusLabel = transferStatus === 'success'
+      ? 'TRANSFERRED SUCCESSFULLY'
+      : 'TRANSFER FAILED';
+    const summarySubject = `LAUREN 2.0 Call Summary — ${Caller_Name} → ${Callee_Name} [${statusLabel}]`;
+    const summaryBody = `
+Call Summary — ${timestamp}
+${'='.repeat(50)}
+
+Caller:       ${Caller_Name}
+Caller Phone: ${Caller_Phone || caller_id || 'Unknown'}
+
+Requested:    ${Callee_Name}
+Callee Phone: ${toNumber || 'Not in directory'}
+Callee Email: ${toEmail}
+Callee Role:  ${calleeRole}
+
+Transfer:     ${statusLabel}${transferError ? `\nError:        ${transferError}` : ''}
+
+Call SID:     ${call_sid || 'N/A'}
+`.trim();
+
+    try {
+      await sendEmail({ to: notifyEmail, subject: summarySubject, body: summaryBody });
+      console.log(`[TransferCall] Summary sent to ${notifyEmail}`);
+    } catch (notifyErr) {
+      console.error(`[TransferCall] Failed to send summary: ${notifyErr.message}`);
+    }
+
+    res.status(200).json({
+      status: 'ok',
+      transfer_status: transferStatus,
+      transfer_error: transferError,
+      message: transferStatus === 'success'
+        ? 'Call transfer initiated successfully.'
+        : `Call transfer failed: ${transferError}. Please ask the caller if they would like to leave a message.`
+    });
+  } catch (err) {
+    console.error('[Error] Failed to process /transfer-call:', err.message);
+    logInteraction(`[ERROR] ${err.message}`);
+    res.status(500).send('Failed to process transfer');
+  }
+});
+
+// Webhook: /send-text — Send an SMS to the caller via MessageMedia
+app.post('/send-text', async (req, res) => {
+  try {
+    console.log('[SendText] Payload:', req.body);
+    const { to_phone, message, caller_id } = req.body;
+
+    const phone = to_phone || caller_id;
+
+    if (!phone || !message) {
+      console.error('[SendText] Missing required fields:', { to_phone, message, caller_id });
+      return res.status(400).send('Missing required fields: to_phone (or caller_id) and message');
+    }
+
+    if (!MESSAGEMEDIA_API_KEY || !MESSAGEMEDIA_API_SECRET) {
+      console.error('[SendText] MessageMedia credentials not configured');
+      return res.status(500).send('SMS service not configured');
+    }
+
+    // Send the SMS
+    const smsResult = await sendSms({ to: phone, body: message });
+    console.log('[SendText] SMS sent:', smsResult);
+
+    logInteraction(`[SendText] SMS to ${phone}: ${message}`);
+
+    // Notify Rod by email
+    const timestamp = new Date().toLocaleString('en-NZ', { timeZone: 'Pacific/Auckland' });
+    const summarySubject = `LAUREN 2.0 SMS Sent to ${phone}`;
+    const summaryBody = `
+SMS Sent — ${timestamp}
+${'='.repeat(50)}
+
+To:      ${phone}
+Message: ${message}
+
+Caller ID: ${caller_id || 'N/A'}
+`.trim();
+
+    try {
+      await sendEmail({ to: notifyEmail, subject: summarySubject, body: summaryBody });
+      console.log(`[SendText] Summary sent to ${notifyEmail}`);
+    } catch (notifyErr) {
+      console.error(`[SendText] Failed to send summary email: ${notifyErr.message}`);
+    }
+
+    res.status(200).json({
+      status: 'ok',
+      sms_sent: true,
+      message: 'Text message has been sent successfully.'
+    });
+  } catch (err) {
+    console.error('[Error] Failed to process /send-text:', err.message);
+    logInteraction(`[ERROR] SendText failed: ${err.message}`);
+    res.status(200).json({
+      status: 'error',
+      sms_sent: false,
+      message: `Failed to send text message: ${err.message}. Please apologise and let the caller know we were unable to text them.`
+    });
+  }
+});
+
+// Webhook: /send-message — After hours or failed transfer: take a message (no transfer)
+app.post('/send-message', async (req, res) => {
+  try {
+    console.log('[SendMessage] Payload:', req.body);
+    const { Callee_Name, Caller_Name, Caller_Phone, Caller_Message, caller_id, call_sid } = req.body;
+
+    if (!Callee_Name || !Caller_Name) {
+      console.error('[SendMessage] Missing required fields:', { Callee_Name, Caller_Name });
+      return res.status(400).send('Missing required fields: Callee_Name, Caller_Name');
+    }
+
+    const { toEmail, toNumber, calleeRole } = resolveCallee(Callee_Name);
+
+    const subject = `LAUREN 2.0 New message for ${Callee_Name}`;
     const body = `
 Callee: ${Callee_Name}
 Callee Phone: ${toNumber || 'Unknown'}
@@ -176,28 +380,93 @@ Call SID: ${call_sid}
 `.trim();
 
     await sendEmail({ to: toEmail, subject, body });
-    console.log(`[Email] Message sent to ${toEmail}`);
+    console.log(`[SendMessage] Message sent to ${toEmail}`);
 
-    const logEntry = `
-Interaction:
-Callee: ${Callee_Name}
-Caller: ${Caller_Name}
-Caller Phone: ${Caller_Phone}
-Message: ${Caller_Message}
-Sent to: ${toEmail}
-Call SID: ${call_sid}
-`;
-    logInteraction(logEntry.trim());
+    logInteraction(`[SendMessage] ${Caller_Name} → ${Callee_Name} | Message: ${Caller_Message} | Sent to: ${toEmail} | Call SID: ${call_sid}`);
 
-    // Store call context for transcript retrieval later
-    if (call_sid) {
-      activeCallStore.set(call_sid, {
-        callee_name: Callee_Name,
-        caller_name: Caller_Name,
-        caller_phone: Caller_Phone || caller_id,
-        timestamp: Date.now()
-      });
+    storeCallContext(call_sid, Callee_Name, Caller_Name, Caller_Phone, caller_id);
+
+    // Send call summary notification to Rod
+    const timestamp = new Date().toLocaleString('en-NZ', { timeZone: 'Pacific/Auckland' });
+    const summarySubject = `LAUREN 2.0 Call Summary — ${Caller_Name} → ${Callee_Name} [MESSAGE TAKEN]`;
+    const summaryBody = `
+Call Summary — ${timestamp}
+${'='.repeat(50)}
+
+Caller:       ${Caller_Name}
+Caller Phone: ${Caller_Phone || caller_id || 'Unknown'}
+
+Requested:    ${Callee_Name}
+Callee Phone: ${toNumber || 'Not in directory'}
+Callee Email: ${toEmail}
+Callee Role:  ${calleeRole}
+
+Message:      ${Caller_Message || 'None'}
+
+Transfer:     NOT ATTEMPTED (message only)
+
+Call SID:     ${call_sid || 'N/A'}
+`.trim();
+
+    try {
+      await sendEmail({ to: notifyEmail, subject: summarySubject, body: summaryBody });
+      console.log(`[SendMessage] Summary sent to ${notifyEmail}`);
+    } catch (notifyErr) {
+      console.error(`[SendMessage] Failed to send summary: ${notifyErr.message}`);
     }
+
+    res.status(200).json({
+      status: 'ok',
+      message_sent: true,
+      message: 'Message has been delivered to the staff member. No transfer was attempted.'
+    });
+  } catch (err) {
+    console.error('[Error] Failed to process /send-message:', err.message);
+    logInteraction(`[ERROR] ${err.message}`);
+    res.status(500).send('Failed to send message');
+  }
+});
+
+// Legacy webhook: /send-email — kept for backward compatibility with other agents
+app.post('/send-email', async (req, res) => {
+  try {
+    console.log('[SendEmail] Payload:', req.body);
+    const {
+      Callee_Name,
+      Caller_Name,
+      Caller_Phone,
+      Caller_Message,
+      caller_id,
+      call_sid
+    } = req.body;
+
+    if (!Callee_Name || !Caller_Name) {
+      console.error('[SendEmail] Missing required fields:', { Callee_Name, Caller_Name });
+      return res.status(400).send('Missing required fields: Callee_Name, Caller_Name');
+    }
+
+    const { toEmail, toNumber, calleeRole } = resolveCallee(Callee_Name);
+
+    const subject = `LAUREN 2.0 New message for ${Callee_Name}`;
+    const body = `
+Callee: ${Callee_Name}
+Callee Phone: ${toNumber || 'Unknown'}
+Callee Role: ${calleeRole}
+
+Caller Name: ${Caller_Name}
+Caller Phone: ${Caller_Phone}
+Caller Message: ${Caller_Message}
+
+Caller ID (from Twilio): ${caller_id}
+Call SID: ${call_sid}
+`.trim();
+
+    await sendEmail({ to: toEmail, subject, body });
+    console.log(`[SendEmail] Message sent to ${toEmail}`);
+
+    logInteraction(`[SendEmail] ${Caller_Name} → ${Callee_Name} | Message: ${Caller_Message} | Sent to: ${toEmail} | Call SID: ${call_sid}`);
+
+    storeCallContext(call_sid, Callee_Name, Caller_Name, Caller_Phone, caller_id);
 
     let transferStatus = 'not_attempted';
     let transferError = null;
@@ -206,7 +475,7 @@ Call SID: ${call_sid}
       try {
         await transferCall(call_sid, toNumber);
         console.log(`[Twilio] Call transfer initiated to ${toNumber}`);
-        logInteraction(`Call transferred to ${toNumber}`);
+        logInteraction(`[SendEmail] Transferred to ${toNumber}`);
         transferStatus = 'success';
       } catch (transferErr) {
         console.error(`[Twilio] Transfer failed, but email was sent: ${transferErr.message}`);
@@ -219,14 +488,13 @@ Call SID: ${call_sid}
       transferError = 'No phone number found for this staff member';
     }
 
-    // Send call summary notification to Rod
     const timestamp = new Date().toLocaleString('en-NZ', { timeZone: 'Pacific/Auckland' });
     const statusLabel = transferStatus === 'success'
       ? 'TRANSFERRED SUCCESSFULLY'
       : transferStatus === 'failed'
         ? 'TRANSFER FAILED'
         : 'NO TRANSFER ATTEMPTED';
-    const summarySubject = `ABACUS Call Summary — ${Caller_Name} → ${Callee_Name} [${statusLabel}]`;
+    const summarySubject = `LAUREN 2.0 Call Summary — ${Caller_Name} → ${Callee_Name} [${statusLabel}]`;
     const summaryBody = `
 Call Summary — ${timestamp}
 ${'='.repeat(50)}
@@ -248,9 +516,9 @@ Call SID:     ${call_sid || 'N/A'}
 
     try {
       await sendEmail({ to: notifyEmail, subject: summarySubject, body: summaryBody });
-      console.log(`[Email] Call summary sent to ${notifyEmail}`);
+      console.log(`[SendEmail] Summary sent to ${notifyEmail}`);
     } catch (notifyErr) {
-      console.error(`[Email] Failed to send call summary to ${notifyEmail}:`, notifyErr.message);
+      console.error(`[SendEmail] Failed to send summary: ${notifyErr.message}`);
     }
 
     res.status(200).json({
@@ -365,7 +633,7 @@ app.post('/call-ended', async (req, res) => {
       : req.body.CallDuration ? formatTime(parseInt(req.body.CallDuration)) : 'Unknown';
     const analysis = conversation.analysis || {};
 
-    const subject = `ABACUS Call Transcript - ${callerInfo}`;
+    const subject = `LAUREN 2.0 Call Transcript - ${callerInfo}`;
     const body = `
 Call Transcript - ${timestamp}
 ${'='.repeat(50)}

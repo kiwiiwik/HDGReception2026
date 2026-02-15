@@ -8,11 +8,32 @@ require('dotenv').config();
 
 const app = express();
 app.use(express.json());
+app.use(express.urlencoded({ extended: false }));
 
 const PORT = process.env.PORT || 8080;
 const calleeListPath = path.join(__dirname, 'callee_list.txt');
 const fallbackEmail = process.env.FALLBACK_EMAIL || 'rod.grant@i6.co.nz';
 const notifyEmail = 'rod.grant@hdg.co.nz';
+const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
+const ELEVENLABS_AGENT_ID = 'agent_01jysz8r0bejrvx2d9wv8gckca';
+
+// In-memory store for active calls (call_sid → call context)
+const activeCallStore = new Map();
+
+// Clean up stale entries older than 2 hours
+setInterval(() => {
+  const twoHoursAgo = Date.now() - 2 * 60 * 60 * 1000;
+  for (const [sid, data] of activeCallStore) {
+    if (data.timestamp < twoHoursAgo) activeCallStore.delete(sid);
+  }
+}, 30 * 60 * 1000);
+
+// Format seconds as m:ss
+function formatTime(secs) {
+  const mins = Math.floor(secs / 60);
+  const s = Math.floor(secs % 60);
+  return `${mins}:${s.toString().padStart(2, '0')}`;
+}
 
 // Setup logs directory
 const logDir = path.join(__dirname, 'logs');
@@ -168,6 +189,16 @@ Call SID: ${call_sid}
 `;
     logInteraction(logEntry.trim());
 
+    // Store call context for transcript retrieval later
+    if (call_sid) {
+      activeCallStore.set(call_sid, {
+        callee_name: Callee_Name,
+        caller_name: Caller_Name,
+        caller_phone: Caller_Phone || caller_id,
+        timestamp: Date.now()
+      });
+    }
+
     let transferStatus = 'not_attempted';
     let transferError = null;
 
@@ -255,6 +286,112 @@ app.post('/transfer', (req, res) => {
   console.log('[Transfer] Returning TwiML:', xml);
   logInteraction(`Transfer XML generated for ${to}`);
   res.set('Content-Type', 'text/xml').send(xml);
+});
+
+// Endpoint: /call-ended — Twilio StatusCallback, fetches transcript and emails it
+app.post('/call-ended', async (req, res) => {
+  const callSid = req.body.CallSid;
+  const callStatus = req.body.CallStatus;
+
+  // Respond immediately so Twilio doesn't retry
+  res.status(200).send('OK');
+
+  if (!callSid || callStatus !== 'completed') return;
+
+  console.log(`[Call Ended] Call ${callSid} completed`);
+
+  const callData = activeCallStore.get(callSid);
+  activeCallStore.delete(callSid);
+
+  if (!ELEVENLABS_API_KEY) {
+    console.warn('[Call Ended] ELEVENLABS_API_KEY not set, skipping transcript');
+    return;
+  }
+
+  // Wait for ElevenLabs to finish processing the conversation
+  await new Promise(resolve => setTimeout(resolve, 15000));
+
+  try {
+    // List recent conversations for this agent and find the matching one
+    const listResp = await axios.get(
+      `https://api.elevenlabs.io/v1/convai/conversations`,
+      {
+        params: { agent_id: ELEVENLABS_AGENT_ID, page_size: 10 },
+        headers: { 'xi-api-key': ELEVENLABS_API_KEY }
+      }
+    );
+
+    const conversations = (listResp.data.conversations || []);
+    if (conversations.length === 0) {
+      console.warn('[Call Ended] No conversations found for agent');
+      return;
+    }
+
+    // Use the most recent completed conversation
+    const conv = conversations.find(c => c.status === 'done') || conversations[0];
+    const conversationId = conv.conversation_id;
+
+    // Fetch full conversation with transcript
+    const convResp = await axios.get(
+      `https://api.elevenlabs.io/v1/convai/conversations/${conversationId}`,
+      { headers: { 'xi-api-key': ELEVENLABS_API_KEY } }
+    );
+
+    const conversation = convResp.data;
+    const transcript = conversation.transcript || [];
+
+    if (transcript.length === 0) {
+      console.warn('[Call Ended] Transcript is empty for conversation', conversationId);
+      return;
+    }
+
+    // Format transcript
+    const formattedTranscript = transcript.map(turn => {
+      const speaker = turn.role === 'agent' ? 'Lauren' : 'Caller';
+      const timeStr = turn.time_in_call_secs != null ? `[${formatTime(turn.time_in_call_secs)}]` : '';
+      return `${timeStr} ${speaker}: ${turn.message}`;
+    }).join('\n\n');
+
+    // Build email
+    const timestamp = new Date().toLocaleString('en-NZ', { timeZone: 'Pacific/Auckland' });
+    const callerInfo = callData
+      ? `${callData.caller_name} (${callData.caller_phone})`
+      : req.body.From || `Unknown (Call SID: ${callSid})`;
+    const calleeInfo = callData?.callee_name || 'Unknown';
+    const duration = conv.call_duration_secs
+      ? formatTime(conv.call_duration_secs)
+      : req.body.CallDuration ? formatTime(parseInt(req.body.CallDuration)) : 'Unknown';
+    const analysis = conversation.analysis || {};
+
+    const subject = `ABACUS Call Transcript - ${callerInfo}`;
+    const body = `
+Call Transcript - ${timestamp}
+${'='.repeat(50)}
+
+Caller:    ${callerInfo}
+Requested: ${calleeInfo}
+Duration:  ${duration}
+Call SID:  ${callSid}
+${analysis.call_successful != null ? `Successful: ${analysis.call_successful}` : ''}
+${analysis.transcript_summary ? `Summary: ${analysis.transcript_summary}` : ''}
+
+${'='.repeat(50)}
+TRANSCRIPT
+${'='.repeat(50)}
+
+${formattedTranscript}
+
+${'='.repeat(50)}
+End of transcript
+`.trim();
+
+    await sendEmail({ to: notifyEmail, subject, body });
+    console.log(`[Call Ended] Transcript emailed to ${notifyEmail}`);
+    logInteraction(`Transcript for call ${callSid} emailed to ${notifyEmail}`);
+  } catch (err) {
+    console.error('[Call Ended] Failed to fetch/send transcript:', err.message);
+    logInteraction(`[ERROR] Transcript fetch/send failed for ${callSid}: ${err.message}`);
+  }
 });
 
 // Reload callee directory (POST /reload-directory)

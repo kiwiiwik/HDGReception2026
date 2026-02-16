@@ -12,9 +12,9 @@ app.use(express.urlencoded({ extended: false }));
 
 const PORT = process.env.PORT || 8080;
 const calleeListPath = path.join(__dirname, 'callee_list.txt');
+const transcriptRecipientsPath = path.join(__dirname, 'transcript_recipients.txt');
 const fallbackEmail = process.env.FALLBACK_EMAIL || 'rod.grant@i6.co.nz';
 const notifyEmail = 'rod.grant@hdg.co.nz';
-const transcriptNotifyEmails = ['rod.grant@hdg.co.nz', 'ron.williams@totalrail.co.nz'];
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
 const ELEVENLABS_AGENT_ID = 'agent_01jysz8r0bejrvx2d9wv8gckca';
 
@@ -70,6 +70,15 @@ function loadCalleeDirectory() {
 
 let calleeDirectory = loadCalleeDirectory();
 console.log(`[Startup] Loaded ${Object.keys(calleeDirectory).length} callee entries`);
+
+// Load transcript recipient emails from file (one per line)
+function loadTranscriptRecipients() {
+  const data = fs.readFileSync(transcriptRecipientsPath, 'utf-8');
+  return data.split('\n').map(line => line.trim()).filter(line => line !== '');
+}
+
+let transcriptNotifyEmails = loadTranscriptRecipients();
+console.log(`[Startup] Loaded ${transcriptNotifyEmails.length} transcript recipients`);
 
 // Build a set of valid phone numbers for transfer validation
 function getValidPhoneNumbers() {
@@ -670,8 +679,9 @@ app.post('/reload-directory', (req, res) => {
   try {
     calleeDirectory = loadCalleeDirectory();
     validPhoneNumbers = getValidPhoneNumbers();
-    console.log(`[Reload] Reloaded ${Object.keys(calleeDirectory).length} callee entries`);
-    logInteraction(`Directory reloaded: ${Object.keys(calleeDirectory).length} entries`);
+    transcriptNotifyEmails = loadTranscriptRecipients();
+    console.log(`[Reload] Reloaded ${Object.keys(calleeDirectory).length} callee entries, ${transcriptNotifyEmails.length} transcript recipients`);
+    logInteraction(`Directory reloaded: ${Object.keys(calleeDirectory).length} entries, ${transcriptNotifyEmails.length} transcript recipients`);
     res.status(200).send('OK');
   } catch (err) {
     console.error('[Reload] Failed:', err.message);

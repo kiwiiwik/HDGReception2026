@@ -12,6 +12,8 @@ app.use(express.urlencoded({ extended: false }));
 
 const PORT = process.env.PORT || 8080;
 const calleeListPath = path.join(__dirname, 'callee_list.txt');
+const transcriptRecipientsPath = path.join(__dirname, 'transcript_recipients.txt');
+const knownCallersPath = path.join(__dirname, 'known_callers.txt');
 const fallbackEmail = process.env.FALLBACK_EMAIL || 'rod.grant@i6.co.nz';
 const notifyEmail = 'rod.grant@hdg.co.nz';
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
@@ -69,6 +71,52 @@ function loadCalleeDirectory() {
 
 let calleeDirectory = loadCalleeDirectory();
 console.log(`[Startup] Loaded ${Object.keys(calleeDirectory).length} callee entries`);
+
+// Load transcript recipient emails from file (one per line)
+function loadTranscriptRecipients() {
+  const data = fs.readFileSync(transcriptRecipientsPath, 'utf-8');
+  return data.split('\n').map(line => line.trim()).filter(line => line !== '');
+}
+
+let transcriptNotifyEmails = loadTranscriptRecipients();
+console.log(`[Startup] Loaded ${transcriptNotifyEmails.length} transcript recipients`);
+
+// Load known callers (phone → name) for return-caller greeting
+function loadKnownCallers() {
+  if (!fs.existsSync(knownCallersPath)) return {};
+  const data = fs.readFileSync(knownCallersPath, 'utf-8');
+  const callers = {};
+  data.split('\n').forEach(line => {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) return;
+    const commaIndex = trimmed.indexOf(',');
+    if (commaIndex === -1) return;
+    const phone = trimmed.substring(0, commaIndex).trim();
+    const name = trimmed.substring(commaIndex + 1).trim();
+    if (phone && name) callers[phone] = name;
+  });
+  return callers;
+}
+
+let knownCallers = loadKnownCallers();
+console.log(`[Startup] Loaded ${Object.keys(knownCallers).length} known callers`);
+
+// Save a new caller to the known callers file (auto-learn from conversations)
+function saveKnownCaller(phone, name) {
+  if (!phone || !name) return;
+  const normalPhone = phone.trim();
+  const normalName = name.trim();
+  if (!normalPhone || !normalName) return;
+
+  // Already known with this name? Skip
+  if (knownCallers[normalPhone] === normalName) return;
+
+  knownCallers[normalPhone] = normalName;
+  fs.appendFileSync(knownCallersPath, `${normalPhone},${normalName}\n`, 'utf-8');
+
+  console.log(`[KnownCallers] Saved: ${normalPhone} → ${normalName}`);
+  logInteraction(`Known caller saved: ${normalPhone} → ${normalName}`);
+}
 
 // Build a set of valid phone numbers for transfer validation
 function getValidPhoneNumbers() {
@@ -190,6 +238,35 @@ function storeCallContext(call_sid, Callee_Name, Caller_Name, Caller_Phone, call
   }
 }
 
+// Twilio voice webhook: /incoming-call — lookup caller and connect to ElevenLabs agent
+app.post('/incoming-call', (req, res) => {
+  const callerNumber = req.body.From || req.body.Caller || '';
+  const callSid = req.body.CallSid || '';
+
+  const knownName = knownCallers[callerNumber];
+
+  console.log(`[Incoming] Call from ${callerNumber}${knownName ? ` (${knownName})` : ' (unknown)'}, SID: ${callSid}`);
+  logInteraction(`Incoming call from ${callerNumber}${knownName ? ` (${knownName})` : ' (unknown)'}`);
+
+  // XML-escape helper
+  const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+  const streamUrl = `wss://api.elevenlabs.io/v1/convai/conversation?agent_id=${ELEVENLABS_AGENT_ID}`;
+
+  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Connect>
+    <Stream url="${esc(streamUrl)}">
+      <Parameter name="caller_id" value="${esc(callerNumber)}" />
+      <Parameter name="caller_name" value="${esc(knownName || '')}" />
+    </Stream>
+  </Connect>
+</Response>`;
+
+  console.log(`[Incoming] Connecting to ElevenLabs, caller_name="${knownName || ''}"`);
+  res.set('Content-Type', 'text/xml').send(twiml);
+});
+
 // Webhook: /transfer-call — Business hours: transfer the caller to a staff member
 app.post('/transfer-call', async (req, res) => {
   try {
@@ -225,6 +302,9 @@ Call SID: ${call_sid}
     logInteraction(`[TransferCall] ${Caller_Name} → ${Callee_Name} | Sent to: ${toEmail} | Call SID: ${call_sid}`);
 
     storeCallContext(call_sid, Callee_Name, Caller_Name, Caller_Phone, caller_id);
+
+    // Auto-learn caller for future greeting
+    saveKnownCaller(Caller_Phone || caller_id, Caller_Name);
 
     // Attempt Twilio call transfer
     let transferStatus = 'not_attempted';
@@ -386,6 +466,9 @@ Call SID: ${call_sid}
 
     storeCallContext(call_sid, Callee_Name, Caller_Name, Caller_Phone, caller_id);
 
+    // Auto-learn caller for future greeting
+    saveKnownCaller(Caller_Phone || caller_id, Caller_Name);
+
     // Send call summary notification to Rod
     const timestamp = new Date().toLocaleString('en-NZ', { timeZone: 'Pacific/Auckland' });
     const summarySubject = `LAUREN 2.0 Call Summary — ${Caller_Name} → ${Callee_Name} [MESSAGE TAKEN]`;
@@ -467,6 +550,9 @@ Call SID: ${call_sid}
     logInteraction(`[SendEmail] ${Caller_Name} → ${Callee_Name} | Message: ${Caller_Message} | Sent to: ${toEmail} | Call SID: ${call_sid}`);
 
     storeCallContext(call_sid, Callee_Name, Caller_Name, Caller_Phone, caller_id);
+
+    // Auto-learn caller for future greeting
+    saveKnownCaller(Caller_Phone || caller_id, Caller_Name);
 
     let transferStatus = 'not_attempted';
     let transferError = null;
@@ -655,9 +741,9 @@ ${'='.repeat(50)}
 End of transcript
 `.trim();
 
-    await sendEmail({ to: notifyEmail, subject, body });
-    console.log(`[Call Ended] Transcript emailed to ${notifyEmail}`);
-    logInteraction(`Transcript for call ${callSid} emailed to ${notifyEmail}`);
+    await sendEmail({ to: transcriptNotifyEmails, subject, body });
+    console.log(`[Call Ended] Transcript emailed to ${transcriptNotifyEmails.join(', ')}`);
+    logInteraction(`Transcript for call ${callSid} emailed to ${transcriptNotifyEmails.join(', ')}`);
   } catch (err) {
     console.error('[Call Ended] Failed to fetch/send transcript:', err.message);
     logInteraction(`[ERROR] Transcript fetch/send failed for ${callSid}: ${err.message}`);
@@ -669,8 +755,10 @@ app.post('/reload-directory', (req, res) => {
   try {
     calleeDirectory = loadCalleeDirectory();
     validPhoneNumbers = getValidPhoneNumbers();
-    console.log(`[Reload] Reloaded ${Object.keys(calleeDirectory).length} callee entries`);
-    logInteraction(`Directory reloaded: ${Object.keys(calleeDirectory).length} entries`);
+    transcriptNotifyEmails = loadTranscriptRecipients();
+    knownCallers = loadKnownCallers();
+    console.log(`[Reload] Reloaded ${Object.keys(calleeDirectory).length} callees, ${transcriptNotifyEmails.length} transcript recipients, ${Object.keys(knownCallers).length} known callers`);
+    logInteraction(`Directory reloaded: ${Object.keys(calleeDirectory).length} callees, ${transcriptNotifyEmails.length} transcript recipients, ${Object.keys(knownCallers).length} known callers`);
     res.status(200).send('OK');
   } catch (err) {
     console.error('[Reload] Failed:', err.message);
@@ -683,6 +771,7 @@ app.get('/health', (req, res) => {
   res.status(200).json({
     status: 'ok',
     callees: Object.keys(calleeDirectory).length,
+    known_callers: Object.keys(knownCallers).length,
     uptime: process.uptime()
   });
 });

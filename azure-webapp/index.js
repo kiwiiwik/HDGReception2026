@@ -239,7 +239,7 @@ function storeCallContext(call_sid, Callee_Name, Caller_Name, Caller_Phone, call
 }
 
 // Twilio voice webhook: /incoming-call — lookup caller and connect to ElevenLabs agent
-app.post('/incoming-call', (req, res) => {
+app.post('/incoming-call', async (req, res) => {
   const callerNumber = req.body.From || req.body.Caller || '';
   const callSid = req.body.CallSid || '';
 
@@ -251,9 +251,32 @@ app.post('/incoming-call', (req, res) => {
   // XML-escape helper
   const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
-  const streamUrl = `wss://api.elevenlabs.io/v1/convai/conversation?agent_id=${ELEVENLABS_AGENT_ID}`;
+  try {
+    // Get a signed WebSocket URL from ElevenLabs
+    const signedUrlResp = await axios.get(
+      `https://api.elevenlabs.io/v1/convai/conversation/get-signed-url?agent_id=${ELEVENLABS_AGENT_ID}`,
+      { headers: { 'xi-api-key': ELEVENLABS_API_KEY } }
+    );
+    const signedUrl = signedUrlResp.data.signed_url;
+    console.log(`[Incoming] Got signed URL from ElevenLabs`);
 
-  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+    const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Connect>
+    <Stream url="${esc(signedUrl)}">
+      <Parameter name="caller_id" value="${esc(callerNumber)}" />
+      <Parameter name="caller_name" value="${esc(knownName || '')}" />
+    </Stream>
+  </Connect>
+</Response>`;
+
+    console.log(`[Incoming] Connecting to ElevenLabs, caller_name="${knownName || ''}"`);
+    res.set('Content-Type', 'text/xml').send(twiml);
+  } catch (err) {
+    console.error(`[Incoming] Failed to get signed URL: ${err.message}`);
+    // Fallback: try unsigned URL
+    const streamUrl = `wss://api.elevenlabs.io/v1/convai/conversation?agent_id=${ELEVENLABS_AGENT_ID}`;
+    const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
     <Stream url="${esc(streamUrl)}">
@@ -262,9 +285,8 @@ app.post('/incoming-call', (req, res) => {
     </Stream>
   </Connect>
 </Response>`;
-
-  console.log(`[Incoming] Connecting to ElevenLabs, caller_name="${knownName || ''}"`);
-  res.set('Content-Type', 'text/xml').send(twiml);
+    res.set('Content-Type', 'text/xml').send(twiml);
+  }
 });
 
 // Webhook: /transfer-call — Business hours: transfer the caller to a staff member

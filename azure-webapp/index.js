@@ -14,6 +14,7 @@ const PORT = process.env.PORT || 8080;
 const calleeListPath = path.join(__dirname, 'callee_list.txt');
 const fallbackEmail = process.env.FALLBACK_EMAIL || 'rod.grant@i6.co.nz';
 const notifyEmail = 'rod.grant@hdg.co.nz';
+const transcriptNotifyEmails = ['rod.grant@hdg.co.nz', 'ron.williams@totalrail.co.nz'];
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
 const ELEVENLABS_AGENT_ID = 'agent_01jysz8r0bejrvx2d9wv8gckca';
 
@@ -655,9 +656,9 @@ ${'='.repeat(50)}
 End of transcript
 `.trim();
 
-    await sendEmail({ to: notifyEmail, subject, body });
-    console.log(`[Call Ended] Transcript emailed to ${notifyEmail}`);
-    logInteraction(`Transcript for call ${callSid} emailed to ${notifyEmail}`);
+    await sendEmail({ to: transcriptNotifyEmails, subject, body });
+    console.log(`[Call Ended] Transcript emailed to ${transcriptNotifyEmails.join(', ')}`);
+    logInteraction(`Transcript for call ${callSid} emailed to ${transcriptNotifyEmails.join(', ')}`);
   } catch (err) {
     console.error('[Call Ended] Failed to fetch/send transcript:', err.message);
     logInteraction(`[ERROR] Transcript fetch/send failed for ${callSid}: ${err.message}`);

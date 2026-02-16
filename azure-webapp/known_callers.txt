@@ -1,0 +1,4 @@
+# Known callers - phone number,name (one per line)
+# This file is updated automatically when callers identify themselves
+# You can also add entries manually
+# Phone numbers should be in E.164 format (e.g. +6421747268)

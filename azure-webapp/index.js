@@ -810,68 +810,94 @@ async function getSignedUrl() {
 }
 
 // WebSocket bridge: Twilio <-> ElevenLabs
-wss.on('connection', async (twilioWs) => {
+wss.on('connection', (twilioWs) => {
   console.log('[WS] Twilio connected to media stream');
 
   let streamSid = null;
   let elevenLabsWs = null;
-  let customParameters = {};
+  let elevenLabsReady = false;
+  let audioQueue = []; // Buffer audio until ElevenLabs is ready
 
-  try {
-    const signedUrl = await getSignedUrl();
-    console.log('[WS] Got signed URL, connecting to ElevenLabs...');
+  // Connect to ElevenLabs (called after we get Twilio's start event with custom params)
+  async function connectToElevenLabs(customParameters) {
+    try {
+      const signedUrl = await getSignedUrl();
+      console.log('[WS] Got signed URL, connecting to ElevenLabs...');
 
-    elevenLabsWs = new WebSocket(signedUrl);
+      elevenLabsWs = new WebSocket(signedUrl);
 
-    elevenLabsWs.on('open', () => {
-      console.log('[WS] Connected to ElevenLabs Conversational AI');
-    });
+      elevenLabsWs.on('open', () => {
+        console.log('[WS] Connected to ElevenLabs Conversational AI');
 
-    elevenLabsWs.on('message', (data) => {
-      try {
-        const msg = JSON.parse(data);
-        switch (msg.type) {
-          case 'conversation_initiation_metadata':
-            console.log('[WS] ElevenLabs conversation initiated');
-            break;
-          case 'audio':
-            if (msg.audio_event?.audio_base_64) {
-              twilioWs.send(JSON.stringify({
-                event: 'media',
-                streamSid,
-                media: { payload: msg.audio_event.audio_base_64 }
-              }));
+        // Tell ElevenLabs to use mulaw 8kHz (Twilio's phone audio format)
+        const initMessage = {
+          type: 'conversation_initiation_client_data',
+          conversation_config_override: {
+            tts: {
+              agent_output_audio_format: 'ulaw_8000'
             }
-            break;
-          case 'interruption':
-            twilioWs.send(JSON.stringify({ event: 'clear', streamSid }));
-            break;
-          case 'ping':
-            if (msg.ping_event?.event_id) {
-              elevenLabsWs.send(JSON.stringify({
-                type: 'pong',
-                event_id: msg.ping_event.event_id
-              }));
-            }
-            break;
+          },
+          custom_llm_extra_body: {
+            caller_name: customParameters.caller_name || '',
+            caller_id: customParameters.caller_id || ''
+          }
+        };
+        elevenLabsWs.send(JSON.stringify(initMessage));
+        console.log(`[WS] Sent config: ulaw_8000 output, caller_name="${customParameters.caller_name || ''}"`);
+
+        elevenLabsReady = true;
+        // Flush any buffered audio
+        for (const chunk of audioQueue) {
+          elevenLabsWs.send(JSON.stringify({ user_audio_chunk: chunk }));
         }
-      } catch (err) {
-        console.error('[WS] Error handling ElevenLabs message:', err.message);
-      }
-    });
+        audioQueue = [];
+      });
 
-    elevenLabsWs.on('error', (err) => {
-      console.error('[WS] ElevenLabs WebSocket error:', err.message);
-    });
+      elevenLabsWs.on('message', (data) => {
+        try {
+          const msg = JSON.parse(data);
+          switch (msg.type) {
+            case 'conversation_initiation_metadata':
+              console.log('[WS] ElevenLabs conversation initiated');
+              break;
+            case 'audio':
+              if (msg.audio_event?.audio_base_64) {
+                twilioWs.send(JSON.stringify({
+                  event: 'media',
+                  streamSid,
+                  media: { payload: msg.audio_event.audio_base_64 }
+                }));
+              }
+              break;
+            case 'interruption':
+              twilioWs.send(JSON.stringify({ event: 'clear', streamSid }));
+              break;
+            case 'ping':
+              if (msg.ping_event?.event_id) {
+                elevenLabsWs.send(JSON.stringify({
+                  type: 'pong',
+                  event_id: msg.ping_event.event_id
+                }));
+              }
+              break;
+          }
+        } catch (err) {
+          console.error('[WS] Error handling ElevenLabs message:', err.message);
+        }
+      });
 
-    elevenLabsWs.on('close', () => {
-      console.log('[WS] ElevenLabs disconnected');
-    });
+      elevenLabsWs.on('error', (err) => {
+        console.error('[WS] ElevenLabs WebSocket error:', err.message);
+      });
 
-  } catch (err) {
-    console.error('[WS] Failed to connect to ElevenLabs:', err.message);
-    twilioWs.close();
-    return;
+      elevenLabsWs.on('close', () => {
+        console.log('[WS] ElevenLabs disconnected');
+      });
+
+    } catch (err) {
+      console.error('[WS] Failed to connect to ElevenLabs:', err.message);
+      twilioWs.close();
+    }
   }
 
   // Handle messages from Twilio
@@ -881,14 +907,19 @@ wss.on('connection', async (twilioWs) => {
       switch (data.event) {
         case 'start':
           streamSid = data.start.streamSid;
-          customParameters = data.start.customParameters || {};
+          const customParameters = data.start.customParameters || {};
           console.log(`[WS] Twilio stream started, SID: ${streamSid}, caller: ${customParameters.caller_name || 'unknown'}`);
+          // Now that we have caller params, connect to ElevenLabs
+          connectToElevenLabs(customParameters);
           break;
         case 'media':
-          if (elevenLabsWs && elevenLabsWs.readyState === WebSocket.OPEN) {
+          if (elevenLabsReady && elevenLabsWs && elevenLabsWs.readyState === WebSocket.OPEN) {
             elevenLabsWs.send(JSON.stringify({
               user_audio_chunk: Buffer.from(data.media.payload, 'base64').toString('base64')
             }));
+          } else {
+            // Buffer audio until ElevenLabs is ready
+            audioQueue.push(Buffer.from(data.media.payload, 'base64').toString('base64'));
           }
           break;
         case 'stop':

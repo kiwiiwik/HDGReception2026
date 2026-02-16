@@ -1,9 +1,11 @@
 // index.js
 const express = require('express');
+const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const nodemailer = require('nodemailer');
 const axios = require('axios');
+const WebSocket = require('ws');
 require('dotenv').config();
 
 const app = express();
@@ -239,7 +241,7 @@ function storeCallContext(call_sid, Callee_Name, Caller_Name, Caller_Phone, call
 }
 
 // Twilio voice webhook: /incoming-call — lookup caller and connect to ElevenLabs agent
-app.post('/incoming-call', async (req, res) => {
+app.post('/incoming-call', (req, res) => {
   const callerNumber = req.body.From || req.body.Caller || '';
   const callSid = req.body.CallSid || '';
 
@@ -251,42 +253,20 @@ app.post('/incoming-call', async (req, res) => {
   // XML-escape helper
   const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
-  try {
-    // Get a signed WebSocket URL from ElevenLabs
-    const signedUrlResp = await axios.get(
-      `https://api.elevenlabs.io/v1/convai/conversation/get-signed-url?agent_id=${ELEVENLABS_AGENT_ID}`,
-      { headers: { 'xi-api-key': ELEVENLABS_API_KEY } }
-    );
-    const signedUrl = signedUrlResp.data.signed_url;
-    console.log(`[Incoming] Got signed URL from ElevenLabs`);
-
-    const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+  // Point Twilio's Stream at our own WebSocket bridge (which will connect to ElevenLabs)
+  const host = req.headers.host;
+  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
-    <Stream url="${esc(signedUrl)}">
+    <Stream url="wss://${host}/media-stream">
       <Parameter name="caller_id" value="${esc(callerNumber)}" />
       <Parameter name="caller_name" value="${esc(knownName || '')}" />
     </Stream>
   </Connect>
 </Response>`;
 
-    console.log(`[Incoming] Connecting to ElevenLabs, caller_name="${knownName || ''}"`);
-    res.set('Content-Type', 'text/xml').send(twiml);
-  } catch (err) {
-    console.error(`[Incoming] Failed to get signed URL: ${err.message}`);
-    // Fallback: try unsigned URL
-    const streamUrl = `wss://api.elevenlabs.io/v1/convai/conversation?agent_id=${ELEVENLABS_AGENT_ID}`;
-    const twiml = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Connect>
-    <Stream url="${esc(streamUrl)}">
-      <Parameter name="caller_id" value="${esc(callerNumber)}" />
-      <Parameter name="caller_name" value="${esc(knownName || '')}" />
-    </Stream>
-  </Connect>
-</Response>`;
-    res.set('Content-Type', 'text/xml').send(twiml);
-  }
+  console.log(`[Incoming] Streaming to wss://${host}/media-stream, caller_name="${knownName || ''}"`);
+  res.set('Content-Type', 'text/xml').send(twiml);
 });
 
 // Webhook: /transfer-call — Business hours: transfer the caller to a staff member
@@ -674,7 +654,14 @@ app.post('/call-ended', async (req, res) => {
 
   if (!callSid || callStatus !== 'completed') return;
 
-  console.log(`[Call Ended] Call ${callSid} completed`);
+  const callDuration = parseInt(req.body.CallDuration || '0', 10);
+  console.log(`[Call Ended] Call ${callSid} completed, duration: ${callDuration}s`);
+
+  // Skip transcript if the call was too short (likely dropped/failed)
+  if (callDuration < 5) {
+    console.warn(`[Call Ended] Call ${callSid} was only ${callDuration}s — skipping transcript`);
+    return;
+  }
 
   const callData = activeCallStore.get(callSid);
   activeCallStore.delete(callSid);
@@ -703,9 +690,15 @@ app.post('/call-ended', async (req, res) => {
       return;
     }
 
-    // Use the most recent completed conversation
+    // Use the most recent completed conversation, but only if it started recently (within 2 minutes)
     const conv = conversations.find(c => c.status === 'done') || conversations[0];
     const conversationId = conv.conversation_id;
+    const convStartTime = conv.start_time_unix_secs || conv.created_at_unix_secs || 0;
+    const nowSecs = Math.floor(Date.now() / 1000);
+    if (convStartTime && (nowSecs - convStartTime) > 120) {
+      console.warn(`[Call Ended] Most recent conversation is ${nowSecs - convStartTime}s old (too stale), skipping transcript`);
+      return;
+    }
 
     // Fetch full conversation with transcript
     const convResp = await axios.get(
@@ -803,8 +796,124 @@ app.get('/', (req, res) => {
   res.status(200).send('HDG Reception - Running');
 });
 
+// Create HTTP server and WebSocket server
+const server = http.createServer(app);
+const wss = new WebSocket.Server({ server, path: '/media-stream' });
+
+// Helper: get signed URL from ElevenLabs
+async function getSignedUrl() {
+  const resp = await axios.get(
+    `https://api.elevenlabs.io/v1/convai/conversation/get_signed_url?agent_id=${ELEVENLABS_AGENT_ID}`,
+    { headers: { 'xi-api-key': ELEVENLABS_API_KEY } }
+  );
+  return resp.data.signed_url;
+}
+
+// WebSocket bridge: Twilio <-> ElevenLabs
+wss.on('connection', async (twilioWs) => {
+  console.log('[WS] Twilio connected to media stream');
+
+  let streamSid = null;
+  let elevenLabsWs = null;
+  let customParameters = {};
+
+  try {
+    const signedUrl = await getSignedUrl();
+    console.log('[WS] Got signed URL, connecting to ElevenLabs...');
+
+    elevenLabsWs = new WebSocket(signedUrl);
+
+    elevenLabsWs.on('open', () => {
+      console.log('[WS] Connected to ElevenLabs Conversational AI');
+    });
+
+    elevenLabsWs.on('message', (data) => {
+      try {
+        const msg = JSON.parse(data);
+        switch (msg.type) {
+          case 'conversation_initiation_metadata':
+            console.log('[WS] ElevenLabs conversation initiated');
+            break;
+          case 'audio':
+            if (msg.audio_event?.audio_base_64) {
+              twilioWs.send(JSON.stringify({
+                event: 'media',
+                streamSid,
+                media: { payload: msg.audio_event.audio_base_64 }
+              }));
+            }
+            break;
+          case 'interruption':
+            twilioWs.send(JSON.stringify({ event: 'clear', streamSid }));
+            break;
+          case 'ping':
+            if (msg.ping_event?.event_id) {
+              elevenLabsWs.send(JSON.stringify({
+                type: 'pong',
+                event_id: msg.ping_event.event_id
+              }));
+            }
+            break;
+        }
+      } catch (err) {
+        console.error('[WS] Error handling ElevenLabs message:', err.message);
+      }
+    });
+
+    elevenLabsWs.on('error', (err) => {
+      console.error('[WS] ElevenLabs WebSocket error:', err.message);
+    });
+
+    elevenLabsWs.on('close', () => {
+      console.log('[WS] ElevenLabs disconnected');
+    });
+
+  } catch (err) {
+    console.error('[WS] Failed to connect to ElevenLabs:', err.message);
+    twilioWs.close();
+    return;
+  }
+
+  // Handle messages from Twilio
+  twilioWs.on('message', (message) => {
+    try {
+      const data = JSON.parse(message);
+      switch (data.event) {
+        case 'start':
+          streamSid = data.start.streamSid;
+          customParameters = data.start.customParameters || {};
+          console.log(`[WS] Twilio stream started, SID: ${streamSid}, caller: ${customParameters.caller_name || 'unknown'}`);
+          break;
+        case 'media':
+          if (elevenLabsWs && elevenLabsWs.readyState === WebSocket.OPEN) {
+            elevenLabsWs.send(JSON.stringify({
+              user_audio_chunk: Buffer.from(data.media.payload, 'base64').toString('base64')
+            }));
+          }
+          break;
+        case 'stop':
+          console.log('[WS] Twilio stream stopped');
+          if (elevenLabsWs) elevenLabsWs.close();
+          break;
+      }
+    } catch (err) {
+      console.error('[WS] Error handling Twilio message:', err.message);
+    }
+  });
+
+  twilioWs.on('close', () => {
+    console.log('[WS] Twilio disconnected');
+    if (elevenLabsWs) elevenLabsWs.close();
+  });
+
+  twilioWs.on('error', (err) => {
+    console.error('[WS] Twilio WebSocket error:', err.message);
+    if (elevenLabsWs) elevenLabsWs.close();
+  });
+});
+
 // Start server
-app.listen(PORT, () => {
+server.listen(PORT, () => {
   console.log(`[Startup] Listening on port ${PORT}`);
   logInteraction(`Server started on port ${PORT}`);
 });

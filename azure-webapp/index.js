@@ -796,7 +796,75 @@ app.get('/', (req, res) => {
   res.status(200).send('HDG Reception - Running');
 });
 
-// Create HTTP server and WebSocket server
+// ── Audio format conversion: Twilio (mulaw 8kHz) <-> ElevenLabs (PCM 16-bit 16kHz) ──
+
+// μ-law decode table (ITU-T G.711)
+const MULAW_DECODE = new Int16Array(256);
+for (let i = 0; i < 256; i++) {
+  let v = ~i & 0xFF;
+  const sign = v & 0x80;
+  const exponent = (v >> 4) & 0x07;
+  const mantissa = v & 0x0F;
+  let sample = ((mantissa << 3) + 0x84) << exponent;
+  sample -= 0x84;
+  MULAW_DECODE[i] = sign ? -sample : sample;
+}
+
+// Linear 16-bit to μ-law encode
+function linearToMulaw(sample) {
+  const BIAS = 0x84;
+  const CLIP = 32635;
+  const expLut = [0,0,1,1,2,2,2,2,3,3,3,3,3,3,3,3,
+                  4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,
+                  5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,
+                  5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,
+                  6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,
+                  6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,
+                  6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,
+                  6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,
+                  7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,
+                  7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,
+                  7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,
+                  7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,
+                  7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,
+                  7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,
+                  7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,
+                  7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7];
+
+  let sign = (sample >> 8) & 0x80;
+  if (sign) sample = -sample;
+  if (sample > CLIP) sample = CLIP;
+  sample += BIAS;
+  const exponent = expLut[(sample >> 7) & 0xFF];
+  const mantissa = (sample >> (exponent + 3)) & 0x0F;
+  return ~(sign | (exponent << 4) | mantissa) & 0xFF;
+}
+
+// Convert mulaw 8kHz buffer → PCM 16-bit 16kHz buffer (upsample 2x)
+function mulawToPcm16k(mulawBuf) {
+  const pcmBuf = Buffer.alloc(mulawBuf.length * 4); // 2x samples, 2 bytes each
+  for (let i = 0; i < mulawBuf.length; i++) {
+    const sample = MULAW_DECODE[mulawBuf[i]];
+    // Duplicate each sample for 8kHz → 16kHz
+    pcmBuf.writeInt16LE(sample, i * 4);
+    pcmBuf.writeInt16LE(sample, i * 4 + 2);
+  }
+  return pcmBuf;
+}
+
+// Convert PCM 16-bit 16kHz buffer → mulaw 8kHz buffer (downsample 2x)
+function pcm16kToMulaw(pcmBuf) {
+  const numSamples = pcmBuf.length / 2;
+  const mulawBuf = Buffer.alloc(Math.floor(numSamples / 2));
+  for (let i = 0; i < mulawBuf.length; i++) {
+    const sample = pcmBuf.readInt16LE(i * 4); // Take every 2nd sample
+    mulawBuf[i] = linearToMulaw(sample);
+  }
+  return mulawBuf;
+}
+
+// ── WebSocket bridge ──
+
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server, path: '/media-stream' });
 
@@ -829,21 +897,16 @@ wss.on('connection', (twilioWs) => {
       elevenLabsWs.on('open', () => {
         console.log('[WS] Connected to ElevenLabs Conversational AI');
 
-        // Tell ElevenLabs to use mulaw 8kHz (Twilio's phone audio format)
+        // Send caller info to ElevenLabs as custom parameters
         const initMessage = {
           type: 'conversation_initiation_client_data',
-          conversation_config_override: {
-            tts: {
-              agent_output_audio_format: 'ulaw_8000'
-            }
-          },
           custom_llm_extra_body: {
             caller_name: customParameters.caller_name || '',
             caller_id: customParameters.caller_id || ''
           }
         };
         elevenLabsWs.send(JSON.stringify(initMessage));
-        console.log(`[WS] Sent config: ulaw_8000 output, caller_name="${customParameters.caller_name || ''}"`);
+        console.log(`[WS] Sent caller params, caller_name="${customParameters.caller_name || ''}" (audio conversion: mulaw<->pcm16k active)`);
 
         elevenLabsReady = true;
         // Flush any buffered audio
@@ -862,10 +925,13 @@ wss.on('connection', (twilioWs) => {
               break;
             case 'audio':
               if (msg.audio_event?.audio_base_64) {
+                // Convert PCM 16kHz from ElevenLabs → mulaw 8kHz for Twilio
+                const pcmBuf = Buffer.from(msg.audio_event.audio_base_64, 'base64');
+                const mulawBuf = pcm16kToMulaw(pcmBuf);
                 twilioWs.send(JSON.stringify({
                   event: 'media',
                   streamSid,
-                  media: { payload: msg.audio_event.audio_base_64 }
+                  media: { payload: mulawBuf.toString('base64') }
                 }));
               }
               break;
@@ -913,13 +979,14 @@ wss.on('connection', (twilioWs) => {
           connectToElevenLabs(customParameters);
           break;
         case 'media':
+          // Convert mulaw 8kHz from Twilio → PCM 16kHz for ElevenLabs
+          const mulawIn = Buffer.from(data.media.payload, 'base64');
+          const pcmOut = mulawToPcm16k(mulawIn);
+          const pcmB64 = pcmOut.toString('base64');
           if (elevenLabsReady && elevenLabsWs && elevenLabsWs.readyState === WebSocket.OPEN) {
-            elevenLabsWs.send(JSON.stringify({
-              user_audio_chunk: Buffer.from(data.media.payload, 'base64').toString('base64')
-            }));
+            elevenLabsWs.send(JSON.stringify({ user_audio_chunk: pcmB64 }));
           } else {
-            // Buffer audio until ElevenLabs is ready
-            audioQueue.push(Buffer.from(data.media.payload, 'base64').toString('base64'));
+            audioQueue.push(pcmB64);
           }
           break;
         case 'stop':

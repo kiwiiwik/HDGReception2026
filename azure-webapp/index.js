@@ -255,6 +255,7 @@ app.post('/incoming-call', (req, res) => {
   const knownName = knownCallers[callerNumber];
 
   console.log(`[Incoming] Call from ${callerNumber}${knownName ? ` (${knownName})` : ' (unknown)'}, SID: ${callSid}`);
+  console.log(`[Incoming] Known callers in memory: ${Object.keys(knownCallers).length}, lookup key: "${callerNumber}", result: "${knownName || ''}"`);
   logInteraction(`Incoming call from ${callerNumber}${knownName ? ` (${knownName})` : ' (unknown)'}`);
 
   // XML-escape helper
@@ -922,22 +923,32 @@ wss.on('connection', (twilioWs) => {
       elevenLabsWs.on('open', () => {
         console.log('[WS] Connected to ElevenLabs Conversational AI');
 
+        const callerName = customParameters.caller_name || '';
+        const callerId = customParameters.caller_id || '';
+
         // Store call metadata server-side so /transfer-call can look it up
         activeBridgeCall = {
-          caller_id: customParameters.caller_id || '',
+          caller_id: callerId,
           call_sid: customParameters.call_sid || '',
-          caller_name: customParameters.caller_name || '',
+          caller_name: callerName,
           timestamp: Date.now()
         };
 
-        // Send caller info to ElevenLabs (no dynamic_variables — it causes disconnects)
+        // Build init message — override first_message for known callers
         const initMessage = {
           type: 'conversation_initiation_client_data',
-          custom_llm_extra_body: {
-            caller_name: customParameters.caller_name || '',
-            caller_id: customParameters.caller_id || ''
-          }
         };
+
+        if (callerName) {
+          // Known caller: personalise the greeting and tell the agent who they are
+          initMessage.conversation_config_override = {
+            agent: {
+              first_message: `Hi ${callerName}, welcome back to HDG Construction, Gibbons Rail and Total Rail Solutions! How can I help you today?`
+            }
+          };
+          console.log(`[WS] Known caller "${callerName}" — overriding first message`);
+        }
+
         elevenLabsWs.send(JSON.stringify(initMessage));
         console.log(`[WS] Sent init, stored bridge call: caller_id="${activeBridgeCall.caller_id}", call_sid="${activeBridgeCall.call_sid}"`);
 

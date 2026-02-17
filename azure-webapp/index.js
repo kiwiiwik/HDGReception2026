@@ -261,6 +261,7 @@ app.post('/incoming-call', (req, res) => {
     <Stream url="wss://${host}/media-stream">
       <Parameter name="caller_id" value="${esc(callerNumber)}" />
       <Parameter name="caller_name" value="${esc(knownName || '')}" />
+      <Parameter name="call_sid" value="${esc(callSid)}" />
     </Stream>
   </Connect>
 </Response>`;
@@ -897,16 +898,22 @@ wss.on('connection', (twilioWs) => {
       elevenLabsWs.on('open', () => {
         console.log('[WS] Connected to ElevenLabs Conversational AI');
 
-        // Send caller info to ElevenLabs as custom parameters
+        // Send caller info to ElevenLabs — provide system dynamic variables
+        // so tools like TransferCall get caller_id and call_sid
         const initMessage = {
           type: 'conversation_initiation_client_data',
+          dynamic_variables: {
+            system__caller_id: customParameters.caller_id || '',
+            system__call_sid: customParameters.call_sid || ''
+          },
           custom_llm_extra_body: {
             caller_name: customParameters.caller_name || '',
-            caller_id: customParameters.caller_id || ''
+            caller_id: customParameters.caller_id || '',
+            call_sid: customParameters.call_sid || ''
           }
         };
         elevenLabsWs.send(JSON.stringify(initMessage));
-        console.log(`[WS] Sent caller params, caller_name="${customParameters.caller_name || ''}" (audio conversion: mulaw<->pcm16k active)`);
+        console.log(`[WS] Sent dynamic vars: caller_id="${customParameters.caller_id || ''}", call_sid="${customParameters.call_sid || ''}", caller_name="${customParameters.caller_name || ''}"`);
 
         elevenLabsReady = true;
         // Flush any buffered audio

@@ -15,7 +15,10 @@ app.use(express.urlencoded({ extended: false }));
 const PORT = process.env.PORT || 8080;
 const calleeListPath = path.join(__dirname, 'callee_list.txt');
 const transcriptRecipientsPath = path.join(__dirname, 'transcript_recipients.txt');
-const knownCallersPath = path.join(__dirname, 'known_callers.txt');
+// Store known_callers.txt in a persistent directory that survives Azure redeploys
+// Azure App Service: /home persists, /home/site/wwwroot gets overwritten on deploy
+const knownCallersDir = process.env.KNOWN_CALLERS_DIR || path.join(__dirname);
+const knownCallersPath = path.join(knownCallersDir, 'known_callers.txt');
 const fallbackEmail = process.env.FALLBACK_EMAIL || 'rod.grant@i6.co.nz';
 const notifyEmail = 'rod.grant@hdg.co.nz';
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
@@ -280,12 +283,13 @@ app.post('/transfer-call', async (req, res) => {
     console.log('[TransferCall] Payload:', req.body);
     let { Callee_Name, Caller_Name, Caller_Phone, caller_id, call_sid } = req.body;
 
-    // Fill in null values from our bridge session (ElevenLabs system vars are null via WebSocket)
+    // Fill in null/None values from our bridge session (ElevenLabs system vars are null via WebSocket)
+    const isBlank = (v) => !v || v === 'None' || v === 'null' || v === 'undefined';
     if (activeBridgeCall) {
-      if (!caller_id) caller_id = activeBridgeCall.caller_id;
-      if (!call_sid) call_sid = activeBridgeCall.call_sid;
-      if (!Caller_Phone) Caller_Phone = activeBridgeCall.caller_id;
-      console.log(`[TransferCall] Filled from bridge: caller_id="${caller_id}", call_sid="${call_sid}"`);
+      if (isBlank(caller_id)) caller_id = activeBridgeCall.caller_id;
+      if (isBlank(call_sid)) call_sid = activeBridgeCall.call_sid;
+      if (isBlank(Caller_Phone)) Caller_Phone = activeBridgeCall.caller_id;
+      console.log(`[TransferCall] Filled from bridge: caller_id="${caller_id}", call_sid="${call_sid}", Caller_Phone="${Caller_Phone}"`);
     }
 
     if (!Callee_Name || !Caller_Name) {
@@ -453,11 +457,12 @@ app.post('/send-message', async (req, res) => {
     console.log('[SendMessage] Payload:', req.body);
     let { Callee_Name, Caller_Name, Caller_Phone, Caller_Message, caller_id, call_sid } = req.body;
 
-    // Fill in null values from our bridge session
+    // Fill in null/None values from our bridge session
+    const isBlank = (v) => !v || v === 'None' || v === 'null' || v === 'undefined';
     if (activeBridgeCall) {
-      if (!caller_id) caller_id = activeBridgeCall.caller_id;
-      if (!call_sid) call_sid = activeBridgeCall.call_sid;
-      if (!Caller_Phone) Caller_Phone = activeBridgeCall.caller_id;
+      if (isBlank(caller_id)) caller_id = activeBridgeCall.caller_id;
+      if (isBlank(call_sid)) call_sid = activeBridgeCall.call_sid;
+      if (isBlank(Caller_Phone)) Caller_Phone = activeBridgeCall.caller_id;
     }
 
     if (!Callee_Name || !Caller_Name) {

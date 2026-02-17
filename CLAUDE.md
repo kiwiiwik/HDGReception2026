@@ -46,14 +46,33 @@ Twilio (incoming call)
 - Voice: Lauren (`w9rPM8AIZle60Nbpw7nl`)
 - Audio: mulaw ↔ PCM conversion at 8000Hz/16000Hz in WebSocket bridge
 
+## WebSocket Bridge — ElevenLabs Init Message
+On WebSocket open, the bridge sends `conversation_initiation_client_data` to ElevenLabs:
+```js
+{
+  type: 'conversation_initiation_client_data',
+  custom_llm_extra_body: {
+    caller_name: '<name from known_callers.txt or empty>',
+    caller_id: '<E.164 phone number>'
+  }
+}
+```
+- `custom_llm_extra_body` works and is available to the LLM as context
+- `conversation_config_override` works once **Security → Overrides → First message** is enabled in the ElevenLabs agent dashboard
+- `dynamic_variables` causes disconnects — do NOT use
+
 ## Current Status
 System is live and deployed. Recent fixes:
-- `known_callers.txt` path now configurable via env var for Azure persistence
+- Synced all three code locations (local, GitHub, Azure) — were all out of sync
+- `known_callers.txt` first-entry-wins: multiple entries for same number now correctly returns the first match, not the last
+- `saveKnownCaller` skips write if number already known — preserves original name
+- Lauren's transfer phrase updated in prompt: "Thanks [caller's name], please stay on the line while I connect you to [callee's name]"
+- `known_callers.txt` path configurable via `KNOWN_CALLERS_DIR` env var for Azure persistence
 - Fixed ElevenLabs sending `'None'` string for null system variables
-- Removed `dynamic_variables` (was causing ElevenLabs disconnects) — use server-side lookup instead
+- Removed `dynamic_variables` (was causing ElevenLabs disconnects)
 
 ## Known Issues
-- Agent reliability has reportedly decreased — needs investigation
+- None currently known.
 
 ## Deployment
 Push to `main` branch → GitHub Actions auto-deploys to Azure Web App.

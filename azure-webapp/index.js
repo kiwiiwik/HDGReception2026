@@ -24,6 +24,10 @@ const ELEVENLABS_AGENT_ID = 'agent_01jysz8r0bejrvx2d9wv8gckca';
 // In-memory store for active calls (call_sid → call context)
 const activeCallStore = new Map();
 
+// Track active bridge sessions so /transfer-call can resolve null caller_id/call_sid
+// Key: any unique id; Value: { caller_id, call_sid, timestamp }
+let activeBridgeCall = null;
+
 // Clean up stale entries older than 2 hours
 setInterval(() => {
   const twoHoursAgo = Date.now() - 2 * 60 * 60 * 1000;
@@ -274,7 +278,15 @@ app.post('/incoming-call', (req, res) => {
 app.post('/transfer-call', async (req, res) => {
   try {
     console.log('[TransferCall] Payload:', req.body);
-    const { Callee_Name, Caller_Name, Caller_Phone, caller_id, call_sid } = req.body;
+    let { Callee_Name, Caller_Name, Caller_Phone, caller_id, call_sid } = req.body;
+
+    // Fill in null values from our bridge session (ElevenLabs system vars are null via WebSocket)
+    if (activeBridgeCall) {
+      if (!caller_id) caller_id = activeBridgeCall.caller_id;
+      if (!call_sid) call_sid = activeBridgeCall.call_sid;
+      if (!Caller_Phone) Caller_Phone = activeBridgeCall.caller_id;
+      console.log(`[TransferCall] Filled from bridge: caller_id="${caller_id}", call_sid="${call_sid}"`);
+    }
 
     if (!Callee_Name || !Caller_Name) {
       console.error('[TransferCall] Missing required fields:', { Callee_Name, Caller_Name });
@@ -439,7 +451,14 @@ Caller ID: ${caller_id || 'N/A'}
 app.post('/send-message', async (req, res) => {
   try {
     console.log('[SendMessage] Payload:', req.body);
-    const { Callee_Name, Caller_Name, Caller_Phone, Caller_Message, caller_id, call_sid } = req.body;
+    let { Callee_Name, Caller_Name, Caller_Phone, Caller_Message, caller_id, call_sid } = req.body;
+
+    // Fill in null values from our bridge session
+    if (activeBridgeCall) {
+      if (!caller_id) caller_id = activeBridgeCall.caller_id;
+      if (!call_sid) call_sid = activeBridgeCall.call_sid;
+      if (!Caller_Phone) Caller_Phone = activeBridgeCall.caller_id;
+    }
 
     if (!Callee_Name || !Caller_Name) {
       console.error('[SendMessage] Missing required fields:', { Callee_Name, Caller_Name });
@@ -898,22 +917,24 @@ wss.on('connection', (twilioWs) => {
       elevenLabsWs.on('open', () => {
         console.log('[WS] Connected to ElevenLabs Conversational AI');
 
-        // Send caller info to ElevenLabs — provide system dynamic variables
-        // so tools like TransferCall get caller_id and call_sid
+        // Store call metadata server-side so /transfer-call can look it up
+        activeBridgeCall = {
+          caller_id: customParameters.caller_id || '',
+          call_sid: customParameters.call_sid || '',
+          caller_name: customParameters.caller_name || '',
+          timestamp: Date.now()
+        };
+
+        // Send caller info to ElevenLabs (no dynamic_variables — it causes disconnects)
         const initMessage = {
           type: 'conversation_initiation_client_data',
-          dynamic_variables: {
-            system__caller_id: customParameters.caller_id || '',
-            system__call_sid: customParameters.call_sid || ''
-          },
           custom_llm_extra_body: {
             caller_name: customParameters.caller_name || '',
-            caller_id: customParameters.caller_id || '',
-            call_sid: customParameters.call_sid || ''
+            caller_id: customParameters.caller_id || ''
           }
         };
         elevenLabsWs.send(JSON.stringify(initMessage));
-        console.log(`[WS] Sent dynamic vars: caller_id="${customParameters.caller_id || ''}", call_sid="${customParameters.call_sid || ''}", caller_name="${customParameters.caller_name || ''}"`);
+        console.log(`[WS] Sent init, stored bridge call: caller_id="${activeBridgeCall.caller_id}", call_sid="${activeBridgeCall.call_sid}"`);
 
         elevenLabsReady = true;
         // Flush any buffered audio
@@ -1009,6 +1030,7 @@ wss.on('connection', (twilioWs) => {
   twilioWs.on('close', () => {
     console.log('[WS] Twilio disconnected');
     if (elevenLabsWs) elevenLabsWs.close();
+    activeBridgeCall = null;
   });
 
   twilioWs.on('error', (err) => {

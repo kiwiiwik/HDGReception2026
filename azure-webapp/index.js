@@ -936,29 +936,16 @@ wss.on('connection', (twilioWs) => {
           timestamp: Date.now()
         };
 
-        // FIX: Use conversation_config_override to inject caller_name directly into
-        // the first_message so Lauren greets returning callers by name.
-        // If caller is known, personalise the greeting; otherwise use generic greeting.
-        const callerName = customParameters.caller_name || '';
-        const firstMessage = callerName
-          ? `Hi ${callerName}, thanks for calling HDG Construction, Gibbons Rail and Total Rail Solutions. How can I help you today?`
-          : `Hi there, you have called HDG Construction, Gibbons Rail and Total Rail Solutions. How can I help you today?`;
-
+        // Send caller info to ElevenLabs (no dynamic_variables — it causes disconnects)
         const initMessage = {
           type: 'conversation_initiation_client_data',
-          conversation_config_override: {
-            agent: {
-              first_message: firstMessage
-            }
-          },
           custom_llm_extra_body: {
-            caller_name: callerName,
+            caller_name: customParameters.caller_name || '',
             caller_id: customParameters.caller_id || ''
           }
         };
         elevenLabsWs.send(JSON.stringify(initMessage));
-        console.log(`[WS] Sent init with first_message: "${firstMessage}"`);
-        console.log(`[WS] Stored bridge call: caller_id="${activeBridgeCall.caller_id}", call_sid="${activeBridgeCall.call_sid}"`);
+        console.log(`[WS] Sent init, stored bridge call: caller_id="${activeBridgeCall.caller_id}", call_sid="${activeBridgeCall.call_sid}"`);
 
         elevenLabsReady = true;
         // Flush any buffered audio

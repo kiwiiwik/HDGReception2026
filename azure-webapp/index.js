@@ -15,7 +15,10 @@ app.use(express.urlencoded({ extended: false }));
 const PORT = process.env.PORT || 8080;
 const calleeListPath = path.join(__dirname, 'callee_list.txt');
 const transcriptRecipientsPath = path.join(__dirname, 'transcript_recipients.txt');
-const knownCallersPath = path.join(__dirname, 'known_callers.txt');
+// Store known_callers.txt in a persistent directory that survives Azure redeploys
+// Azure App Service: /home persists, /home/site/wwwroot gets overwritten on deploy
+const knownCallersDir = process.env.KNOWN_CALLERS_DIR || path.join(__dirname);
+const knownCallersPath = path.join(knownCallersDir, 'known_callers.txt');
 const fallbackEmail = process.env.FALLBACK_EMAIL || 'rod.grant@i6.co.nz';
 const notifyEmail = 'rod.grant@hdg.co.nz';
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;

@@ -90,7 +90,9 @@ function loadTranscriptRecipients() {
 let transcriptNotifyEmails = loadTranscriptRecipients();
 console.log(`[Startup] Loaded ${transcriptNotifyEmails.length} transcript recipients`);
 
-// Load known callers (phone → name) for return-caller greeting
+// Load known callers (phone → name) for return-caller greeting.
+// FIX: Keep only the FIRST entry per phone number — later duplicates (e.g. test names)
+// must not overwrite the original identification.
 function loadKnownCallers() {
   if (!fs.existsSync(knownCallersPath)) return {};
   const data = fs.readFileSync(knownCallersPath, 'utf-8');
@@ -102,7 +104,10 @@ function loadKnownCallers() {
     if (commaIndex === -1) return;
     const phone = trimmed.substring(0, commaIndex).trim();
     const name = trimmed.substring(commaIndex + 1).trim();
-    if (phone && name) callers[phone] = name;
+    // Only store the first occurrence — don't overwrite with later entries
+    if (phone && name && !callers[phone]) {
+      callers[phone] = name;
+    }
   });
   return callers;
 }
@@ -110,15 +115,16 @@ function loadKnownCallers() {
 let knownCallers = loadKnownCallers();
 console.log(`[Startup] Loaded ${Object.keys(knownCallers).length} known callers`);
 
-// Save a new caller to the known callers file (auto-learn from conversations)
+// Save a new caller to the known callers file (auto-learn from conversations).
+// FIX: Only save if the phone number is not already known — don't append duplicates.
 function saveKnownCaller(phone, name) {
   if (!phone || !name) return;
   const normalPhone = phone.trim();
   const normalName = name.trim();
   if (!normalPhone || !normalName) return;
 
-  // Already known with this name? Skip
-  if (knownCallers[normalPhone] === normalName) return;
+  // Already known for this number? Skip — first identification wins.
+  if (knownCallers[normalPhone]) return;
 
   knownCallers[normalPhone] = normalName;
   fs.appendFileSync(knownCallersPath, `${normalPhone},${normalName}\n`, 'utf-8');
@@ -930,16 +936,29 @@ wss.on('connection', (twilioWs) => {
           timestamp: Date.now()
         };
 
-        // Send caller info to ElevenLabs (no dynamic_variables — it causes disconnects)
+        // FIX: Use conversation_config_override to inject caller_name directly into
+        // the first_message so Lauren greets returning callers by name.
+        // If caller is known, personalise the greeting; otherwise use generic greeting.
+        const callerName = customParameters.caller_name || '';
+        const firstMessage = callerName
+          ? `Hi ${callerName}, thanks for calling HDG Construction, Gibbons Rail and Total Rail Solutions. How can I help you today?`
+          : `Hi there, you have called HDG Construction, Gibbons Rail and Total Rail Solutions. How can I help you today?`;
+
         const initMessage = {
           type: 'conversation_initiation_client_data',
+          conversation_config_override: {
+            agent: {
+              first_message: firstMessage
+            }
+          },
           custom_llm_extra_body: {
-            caller_name: customParameters.caller_name || '',
+            caller_name: callerName,
             caller_id: customParameters.caller_id || ''
           }
         };
         elevenLabsWs.send(JSON.stringify(initMessage));
-        console.log(`[WS] Sent init, stored bridge call: caller_id="${activeBridgeCall.caller_id}", call_sid="${activeBridgeCall.call_sid}"`);
+        console.log(`[WS] Sent init with first_message: "${firstMessage}"`);
+        console.log(`[WS] Stored bridge call: caller_id="${activeBridgeCall.caller_id}", call_sid="${activeBridgeCall.call_sid}"`);
 
         elevenLabsReady = true;
         // Flush any buffered audio

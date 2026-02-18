@@ -953,13 +953,15 @@ wss.on('connection', (twilioWs) => {
           ? `Hi ${firstName}, thanks for calling. How can I help?`
           : `Hi there, you have called HDG Construction, Gibbons Rail and Total Rail Solutions. How can I help you today?`;
 
-        // When the caller is known, prepend a clear context block to the system prompt
-        // so the LLM cannot forget or second-guess that it already has the caller's name.
+        // Always send the system prompt from the local file so the ElevenLabs dashboard
+        // never needs to be updated manually. For known callers, also prepend a context
+        // block so the LLM cannot forget it already has the caller's name.
+        const callerContextBlock = firstName
+          ? `[CALLER CONTEXT — THIS TAKES PRIORITY: The caller has been identified. Their full name is "${callerName}". You have already greeted them as "${firstName}" in your opening message. Do NOT ask for their name at any point during this call.]\n\n`
+          : '';
         const agentOverride = { first_message: firstMessage };
-        if (firstName && baseSystemPrompt) {
-          agentOverride.prompt = {
-            prompt: `[CALLER CONTEXT — THIS TAKES PRIORITY: The caller has been identified. Their full name is "${callerName}". You have already greeted them as "${firstName}" in your opening message. Do NOT ask for their name at any point during this call.]\n\n` + baseSystemPrompt
-          };
+        if (baseSystemPrompt) {
+          agentOverride.prompt = { prompt: callerContextBlock + baseSystemPrompt };
         }
 
         const initMessage = {

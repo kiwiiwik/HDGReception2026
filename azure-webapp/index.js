@@ -938,12 +938,15 @@ wss.on('connection', (twilioWs) => {
 
         // Send caller info to ElevenLabs (no dynamic_variables — it causes disconnects)
         const callerName = customParameters.caller_name || '';
-        const greeting = callerName ? `Hi ${callerName}` : 'Hi there';
+        const firstName = callerName ? callerName.split(' ')[0] : '';
+        const firstMessage = firstName
+          ? `Hi ${firstName}, thanks for calling. How can I help?`
+          : `Hi there, you have called HDG Construction, Gibbons Rail and Total Rail Solutions. How can I help you today?`;
         const initMessage = {
           type: 'conversation_initiation_client_data',
           conversation_config_override: {
             agent: {
-              first_message: `${greeting}, you have called HDG Construction, Gibbons Rail and Total Rail Solutions. How can I help you today?`
+              first_message: firstMessage
             }
           },
           custom_llm_extra_body: {

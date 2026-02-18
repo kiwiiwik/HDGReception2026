@@ -15,6 +15,7 @@ app.use(express.urlencoded({ extended: false }));
 const PORT = process.env.PORT || 8080;
 const calleeListPath = path.join(__dirname, 'callee_list.txt');
 const transcriptRecipientsPath = path.join(__dirname, 'transcript_recipients.txt');
+const systemPromptPath = path.join(__dirname, '..', 'elevenlabs', 'updated-prompt.md');
 // Store known_callers.txt in a persistent directory that survives Azure redeploys
 // Azure App Service: /home persists, /home/site/wwwroot gets overwritten on deploy
 const knownCallersDir = process.env.KNOWN_CALLERS_DIR || path.join(__dirname);
@@ -114,6 +115,15 @@ function loadKnownCallers() {
 
 let knownCallers = loadKnownCallers();
 console.log(`[Startup] Loaded ${Object.keys(knownCallers).length} known callers`);
+
+// Load Lauren's system prompt from file so we can prepend caller context per call
+let baseSystemPrompt = '';
+try {
+  baseSystemPrompt = fs.readFileSync(systemPromptPath, 'utf-8');
+  console.log(`[Startup] Loaded system prompt (${baseSystemPrompt.length} chars)`);
+} catch (e) {
+  console.warn('[Startup] Could not read system prompt file — caller-context override disabled:', e.message);
+}
 
 // Save a new caller to the known callers file (auto-learn from conversations).
 // FIX: Only save if the phone number is not already known — don't append duplicates.
@@ -942,13 +952,19 @@ wss.on('connection', (twilioWs) => {
         const firstMessage = firstName
           ? `Hi ${firstName}, thanks for calling. How can I help?`
           : `Hi there, you have called HDG Construction, Gibbons Rail and Total Rail Solutions. How can I help you today?`;
+
+        // When the caller is known, prepend a clear context block to the system prompt
+        // so the LLM cannot forget or second-guess that it already has the caller's name.
+        const agentOverride = { first_message: firstMessage };
+        if (firstName && baseSystemPrompt) {
+          agentOverride.prompt = {
+            prompt: `[CALLER CONTEXT — THIS TAKES PRIORITY: The caller has been identified. Their full name is "${callerName}". You have already greeted them as "${firstName}" in your opening message. Do NOT ask for their name at any point during this call.]\n\n` + baseSystemPrompt
+          };
+        }
+
         const initMessage = {
           type: 'conversation_initiation_client_data',
-          conversation_config_override: {
-            agent: {
-              first_message: firstMessage
-            }
-          },
+          conversation_config_override: { agent: agentOverride },
           custom_llm_extra_body: {
             caller_name: callerName,
             caller_id: customParameters.caller_id || ''

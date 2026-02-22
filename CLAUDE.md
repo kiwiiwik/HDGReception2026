@@ -1,78 +1,120 @@
-# HDG Reception 2026
+# AI Receptionist Platform
 
 ## Project Purpose
-AI-powered phone receptionist for HDG Construction, Gibbons Rail, and Total Rail Solutions (NZ).
-Answers incoming calls via Twilio, uses ElevenLabs conversational AI ("Lauren") to route calls
-to staff during business hours (8am–5pm Mon–Fri NZ time), or takes messages after hours.
+A multi-business AI phone receptionist platform. Each business gets its own AI receptionist
+personality, staff directory, and ElevenLabs agent. Calls arrive via Twilio, are bridged through
+an Azure Web App to ElevenLabs conversational AI, and routed to staff or messages taken.
+
+Currently live businesses:
+- **HDG** — HDG Construction, Gibbons Rail and Total Rail Solutions (receptionist: Lauren)
+- **DEMO** — Demo Company (receptionist: Alex)
 
 ## Architecture
 ```
-Twilio (incoming call)
-  → Azure Web App (index.js WebSocket bridge)
-    → ElevenLabs AI Agent ("Lauren")
-      → TransferCall webhook  → Twilio transfer to staff
-      → SendMessage webhook   → Email/SMS to staff
+Twilio number (per business)
+  → POST /incoming-call/{businessId}   (Azure Web App)
+    → wss://.../media-stream?business={businessId}  (WebSocket bridge)
+      → ElevenLabs Agent (per business — own agent ID, voice, personality)
+        → POST /transfer-call/{businessId}  → Twilio transfer to staff
+        → POST /send-message/{businessId}   → Email to staff member
+        → POST /send-text/{businessId}      → SMS to caller
 ```
 
 ## Key Technologies
-- **Backend**: Node.js / Express (`azure-webapp/index.js`, ~1050 lines)
+- **Backend**: Node.js / Express (`azure-webapp/index.js`, ~500 lines)
 - **Telephony**: Twilio (calls, WebSocket, mulaw audio)
-- **AI**: ElevenLabs agent + Gemini 2.5 Flash Lite LLM
+- **AI**: ElevenLabs agent (one per business) + Gemini 2.5 Flash Lite LLM
 - **Hosting**: Azure Web App (`receptionisthdg.azurewebsites.net`)
-- **Email**: Nodemailer + SMTP2GO
+- **Email**: Nodemailer + SMTP2GO (shared SMTP, per-business recipients)
 - **CI/CD**: GitHub Actions → auto-deploy to Azure on push to main
 
-## Important Files
-| File | Purpose |
-|------|---------|
-| `azure-webapp/index.js` | Main app — all endpoints and WebSocket bridge |
-| `azure-webapp/callee_list.txt` | Staff directory (name, email, phone, role) |
-| `azure-webapp/known_callers.txt` | Returning caller history (path configurable via KNOWN_CALLERS_DIR env var, persisted to /home/data on Azure) |
-| `azure-webapp/transcript_recipients.txt` | Email addresses for call transcripts |
-| `elevenlabs/agent-config.json` | Full ElevenLabs agent config |
-| `elevenlabs/updated-prompt.md` | Lauren's system prompt |
+## Business Directory Structure
+Each business lives in `azure-webapp/businesses/{businessId}/`:
 
-## API Endpoints
-- `POST /incoming-call` — Twilio webhook for new calls
-- `POST /transfer-call` — Transfer to staff (ElevenLabs webhook)
-- `POST /send-message` — After-hours message (ElevenLabs webhook)
-- `POST /send-email` — Email notifications/transcripts
-- `POST /send-text` — SMS to callers
-- `GET /health` — Health check
-- `POST /reload-directory` — Reload staff list from file
+```
+azure-webapp/businesses/
+  hdg/
+    config.json                  ← agent ID, name, phone, hours, email recipients
+    callee_list.txt              ← staff directory (Name,email,phone,role)
+    known_callers.txt            ← local seed (Azure persists to /home/data/hdg/)
+    prompt-hours-known.md        ← business hours, caller is known
+    prompt-hours-unknown.md      ← business hours, caller is unknown
+    prompt-afterhours-known.md   ← after hours, caller is known
+    prompt-afterhours-unknown.md ← after hours, caller is unknown
+  demo/
+    (same structure)
+```
 
-## ElevenLabs Agent
-- Agent ID: `agent_01jysz8r0bejrvx2d9wv8gckca`
-- Voice: Lauren (`w9rPM8AIZle60Nbpw7nl`)
-- Audio: mulaw ↔ PCM conversion at 8000Hz/16000Hz in WebSocket bridge
-
-## WebSocket Bridge — ElevenLabs Init Message
-On WebSocket open, the bridge sends `conversation_initiation_client_data` to ElevenLabs:
-```js
+### config.json fields
+```json
 {
-  type: 'conversation_initiation_client_data',
-  custom_llm_extra_body: {
-    caller_name: '<name from known_callers.txt or empty>',
-    caller_id: '<E.164 phone number>'
-  }
+  "id": "hdg",
+  "displayName": "HDG Construction, Gibbons Rail and Total Rail Solutions",
+  "receptionistName": "Lauren",
+  "elevenLabsAgentId": "agent_01jysz8r0bejrvx2d9wv8gckca",
+  "officePhone": "(09) 415-8327",
+  "address": "Unit 4 / 485A Rosebank Road, Avondale, Auckland 1026",
+  "officeHours": { "timezone": "Pacific/Auckland", "start": "08:00", "end": "17:00", "days": [1,2,3,4,5] },
+  "emailRecipients": ["rod.grant@hdg.co.nz"],
+  "fallbackEmail": "rod.grant@i6.co.nz"
 }
 ```
-- `custom_llm_extra_body` works and is available to the LLM as context
-- `conversation_config_override` works once **Security → Overrides → First message** is enabled in the ElevenLabs agent dashboard
-- `dynamic_variables` causes disconnects — do NOT use
 
-## Current Status
-System is live and deployed. Recent fixes:
-- Synced all three code locations (local, GitHub, Azure) — were all out of sync
-- `known_callers.txt` first-entry-wins: multiple entries for same number now correctly returns the first match, not the last
-- `saveKnownCaller` skips write if number already known — preserves original name
-- Lauren's transfer phrase updated in prompt: "Thanks [caller's name], please stay on the line while I connect you to [callee's name]"
-- `known_callers.txt` path configurable via `KNOWN_CALLERS_DIR` env var for Azure persistence
-- Fixed ElevenLabs sending `'None'` string for null system variables
-- Removed `dynamic_variables` (was causing ElevenLabs disconnects)
+## API Endpoints
+Business-specific (preferred — configure Twilio and ElevenLabs tools to use these):
+- `POST /incoming-call/:businessId` — Twilio webhook for new calls
+- `POST /transfer-call/:businessId` — Transfer to staff (ElevenLabs tool webhook)
+- `POST /send-message/:businessId`  — Take a message (ElevenLabs tool webhook)
+- `POST /send-text/:businessId`     — SMS to caller (ElevenLabs tool webhook)
+- `POST /reload-directory/:businessId` — Hot-reload business config from disk
 
-## Known Issues
-- None currently known.
+Shared / legacy:
+- `POST /transfer`       — Twilio TwiML response for active call transfer
+- `POST /call-ended`     — Twilio StatusCallback — fetches transcript, emails it
+- `GET  /health`         — Shows all loaded businesses and their stats
+- `POST /reload-directory` — Hot-reload all businesses
+
+Legacy (no businessId) — defaults to `hdg` for backward compatibility:
+- `POST /incoming-call`, `/transfer-call`, `/send-message`, `/send-text`, `/send-email`
+
+## How Prompt Selection Works (server-side)
+At call time, Node.js checks:
+1. Is the current NZ time within the business's configured office hours? (incl. public holidays)
+2. Is the caller's phone number in `known_callers.txt`?
+
+Then selects one of the four prompts. The LLM never decides the mode — no "Happy Holiday"
+test trigger, no mid-call mode switching.
+
+## WebSocket Bridge — ElevenLabs Init Message
+On WebSocket open, the bridge sends `conversation_initiation_client_data`:
+- `conversation_config_override.agent.first_message` — personalised greeting
+- `conversation_config_override.agent.prompt.prompt` — selected prompt + optional [CALLER CONTEXT] block
+- `custom_llm_extra_body` — `caller_name`, `caller_id` for mid-call LLM use
+- **Do NOT use `dynamic_variables`** — causes ElevenLabs disconnects
+
+## Known Callers — Per Business
+- On Azure: `/home/data/{businessId}/known_callers.txt` (persists across deploys)
+- Locally: falls back to `azure-webapp/businesses/{businessId}/known_callers.txt`
+- `KNOWN_CALLERS_DIR` env var overrides the base directory (set to `/home/data` on Azure)
+- Format: `+64xxxxxxxxx,Full Name` one per line; first entry per number wins
+- Auto-appended when a new caller gives their name during a call
+
+## Adding a New Business
+1. Create `azure-webapp/businesses/{id}/` with all required files (use `demo/` as template)
+2. Set `elevenLabsAgentId` in `config.json` to the new ElevenLabs agent ID
+3. Configure the ElevenLabs agent's tool URLs to `/transfer-call/{id}`, `/send-message/{id}`, `/send-text/{id}`
+4. Configure the Twilio phone number webhook to `POST /incoming-call/{id}`
+5. Enable **Security → Overrides → First message, System prompt, LLM** in the ElevenLabs dashboard
+6. Push to `main` — the app auto-loads all business directories on startup
+
+## ElevenLabs Agent Requirements (per business)
+- Security → Overrides: **First message, System prompt, LLM** must all be enabled
+- Tool URLs must point to the business-specific endpoints above
+- The dashboard system prompt is a fallback only — code always sends prompt from file
+
+## NZ Public Holidays
+Hardcoded in `index.js` (`NZ_PUBLIC_HOLIDAYS` set). Update annually for 2027+.
+Current list covers 2025 and 2026.
 
 ## Deployment
 Push to `main` branch → GitHub Actions auto-deploys to Azure Web App.

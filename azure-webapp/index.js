@@ -881,20 +881,19 @@ async function getSignedUrl(agentId) {
   return resp.data.signed_url;
 }
 
-// WebSocket connection handler — receives businessId from query param: /media-stream?business=hdg
+// WebSocket connection handler.
+// IMPORTANT: Azure App Service's ARR proxy strips query parameters from WebSocket upgrade
+// URLs, so we cannot rely on ?business=hdg from the URL alone. Instead, business_id is
+// also sent as a Twilio <Stream> custom parameter and resolved from the 'start' event.
 wss.on('connection', (twilioWs, req) => {
   const urlParams = new URL(req.url, 'http://localhost').searchParams;
-  const businessId = urlParams.get('business') || 'hdg';
+  const businessIdFromUrl = urlParams.get('business'); // may be null if stripped by ARR
 
-  let business;
-  try { business = getBusiness(businessId); }
-  catch (e) {
-    console.error(`[WS] Unknown business "${businessId}" — closing connection`);
-    twilioWs.close();
-    return;
-  }
+  // business and businessId are resolved in the 'start' event handler below
+  let business = null;
+  let businessId = businessIdFromUrl || 'pending';
 
-  console.log(`[WS:${businessId}] Twilio connected to media stream`);
+  console.log(`[WS] Twilio connected (URL business param: "${businessIdFromUrl || 'none — will use stream param"}'`);
 
   let streamSid = null;
   let elevenLabsWs = null;
@@ -1006,6 +1005,18 @@ wss.on('connection', (twilioWs, req) => {
         case 'start':
           streamSid = data.start.streamSid;
           const customParameters = data.start.customParameters || {};
+
+          // Resolve business here — stream params are reliable (message body, not URL).
+          // URL query param is preferred if present; stream param is the reliable fallback.
+          businessId = businessIdFromUrl || customParameters.business_id || 'hdg';
+          try {
+            business = getBusiness(businessId);
+          } catch (e) {
+            console.error(`[WS] Unknown business "${businessId}" — closing connection`);
+            twilioWs.close();
+            return;
+          }
+
           console.log(`[WS:${businessId}] Stream started, SID: ${streamSid}, caller: ${customParameters.caller_name || 'unknown'}`);
           connectToElevenLabs(customParameters);
           break;

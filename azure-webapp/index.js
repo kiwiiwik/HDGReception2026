@@ -893,7 +893,7 @@ wss.on('connection', (twilioWs, req) => {
   let business = null;
   let businessId = businessIdFromUrl || 'pending';
 
-  console.log(`[WS] Twilio connected (URL business param: "${businessIdFromUrl || 'none — will use stream param"}'`);
+  console.log(`[WS] Twilio connected, URL business param: ${businessIdFromUrl || 'none (will use stream param)'}`);
 
   let streamSid = null;
   let elevenLabsWs = null;

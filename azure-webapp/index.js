@@ -827,6 +827,23 @@ app.get('/', (req, res) => {
   res.status(200).send(`AI Receptionist — ${[...businesses.keys()].join(', ')} — Running`);
 });
 
+// Diagnostic: send a test email to verify SMTP is working
+// Usage: GET /test-email?to=you@example.com
+app.get('/test-email', async (req, res) => {
+  const to = req.query.to;
+  if (!to) return res.status(400).send('Missing ?to= parameter');
+  try {
+    await sendEmail({
+      to,
+      subject: 'AI Receptionist — SMTP test',
+      body: `SMTP test sent at ${new Date().toISOString()}`
+    });
+    res.status(200).send(`Test email sent to ${to}`);
+  } catch (err) {
+    res.status(500).send(`SMTP error: ${err.message}`);
+  }
+});
+
 // ── Audio format conversion: Twilio (mulaw 8kHz) <-> ElevenLabs (PCM 16-bit 16kHz) ──
 
 const MULAW_DECODE = new Int16Array(256);

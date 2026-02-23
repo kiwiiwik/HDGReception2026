@@ -1,4 +1,4 @@
 Name,email,phone,role
-Jake,n@i6.co.nz,,Manager
-Josh,n@i6.co.nz,,Manager
+Jake,n@i6.co.nz,+64274084769,Manager
+Josh,n@i6.co.nz,+64279112911,Manager
 Rod,rod.grant@i6.co.nz,+6421747268,Administrator & Accounts

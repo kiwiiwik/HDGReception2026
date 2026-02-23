@@ -380,13 +380,22 @@ function handleIncomingCall(req, res) {
 // ElevenLabs webhook: transfer call to staff member
 async function handleTransferCall(req, res) {
   try {
-    const businessId = req.params.businessId || 'hdg';
+    let { Callee_Name, Caller_Name, Caller_Phone, caller_id, call_sid } = req.body;
+
+    // Fill null/None system variables from bridge metadata first (needed to resolve businessId)
+    ({ caller_id, call_sid, Caller_Phone } = fillFromBridge(call_sid, { caller_id, call_sid, Caller_Phone }));
+
+    // Resolve businessId — prefer URL param, fall back to bridge data so legacy tool URLs work
+    const isBlank = v => !v || v === 'None' || v === 'null' || v === 'undefined';
+    let businessId = req.params.businessId;
+    if (!businessId) {
+      const bridge = !isBlank(call_sid) ? activeBridgeCalls.get(call_sid) : null;
+      const latestBridge = bridge || [...activeBridgeCalls.values()].sort((a, b) => b.timestamp - a.timestamp)[0];
+      businessId = latestBridge?.businessId || 'hdg';
+    }
     const business = getBusiness(businessId);
 
     console.log(`[TransferCall:${businessId}] Payload:`, req.body);
-    let { Callee_Name, Caller_Name, Caller_Phone, caller_id, call_sid } = req.body;
-
-    ({ caller_id, call_sid, Caller_Phone } = fillFromBridge(call_sid, { caller_id, call_sid, Caller_Phone }));
 
     if (!Callee_Name || !Caller_Name) {
       console.error(`[TransferCall:${businessId}] Missing required fields:`, { Callee_Name, Caller_Name });
@@ -482,13 +491,22 @@ async function handleTransferCall(req, res) {
 // ElevenLabs webhook: take a message (after hours or failed transfer)
 async function handleSendMessage(req, res) {
   try {
-    const businessId = req.params.businessId || 'hdg';
+    let { Callee_Name, Caller_Name, Caller_Phone, Caller_Message, caller_id, call_sid } = req.body;
+
+    // Fill null/None system variables from bridge metadata first (needed to resolve businessId)
+    ({ caller_id, call_sid, Caller_Phone } = fillFromBridge(call_sid, { caller_id, call_sid, Caller_Phone }));
+
+    // Resolve businessId — prefer URL param, fall back to bridge data so legacy tool URLs work
+    const isBlank = v => !v || v === 'None' || v === 'null' || v === 'undefined';
+    let businessId = req.params.businessId;
+    if (!businessId) {
+      const bridge = !isBlank(call_sid) ? activeBridgeCalls.get(call_sid) : null;
+      const latestBridge = bridge || [...activeBridgeCalls.values()].sort((a, b) => b.timestamp - a.timestamp)[0];
+      businessId = latestBridge?.businessId || 'hdg';
+    }
     const business = getBusiness(businessId);
 
     console.log(`[SendMessage:${businessId}] Payload:`, req.body);
-    let { Callee_Name, Caller_Name, Caller_Phone, Caller_Message, caller_id, call_sid } = req.body;
-
-    ({ caller_id, call_sid, Caller_Phone } = fillFromBridge(call_sid, { caller_id, call_sid, Caller_Phone }));
 
     if (!Callee_Name || !Caller_Name) {
       console.error(`[SendMessage:${businessId}] Missing required fields:`, { Callee_Name, Caller_Name });
@@ -649,7 +667,9 @@ app.post('/call-ended', async (req, res) => {
   const callSid = req.body.CallSid;
   const callStatus = req.body.CallStatus;
 
-  res.status(200).send('OK'); // respond immediately so Twilio doesn't retry
+  // Return valid TwiML so Twilio doesn't complain regardless of whether it's
+  // called from <Connect action> or a phone-number StatusCallback
+  res.set('Content-Type', 'text/xml').status(200).send('<?xml version="1.0" encoding="UTF-8"?><Response/>');
 
   if (!callSid || callStatus !== 'completed') return;
 

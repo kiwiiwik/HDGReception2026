@@ -169,11 +169,19 @@ function loadBusiness(businessId) {
     }
   }
 
+  // Load optional knowledge base — appended to the system prompt at call time
+  let knowledge = '';
+  try {
+    knowledge = fs.readFileSync(path.join(dir, 'knowledge.md'), 'utf-8');
+  } catch (e) {
+    // knowledge.md is optional — no warning needed
+  }
+
   const validPhoneNumbers = new Set(
     Object.values(calleeDirectory).map(e => e.phone).filter(Boolean)
   );
 
-  return { config, calleeDirectory, knownCallers, knownCallersPath, prompts, validPhoneNumbers };
+  return { config, calleeDirectory, knownCallers, knownCallersPath, prompts, knowledge, validPhoneNumbers };
 }
 
 function loadAllBusinesses() {
@@ -928,7 +936,11 @@ wss.on('connection', (twilioWs, req) => {
 
         // Select prompt based on time of day and whether caller is known
         const isKnownCaller = !!firstName;
-        const systemPrompt = selectPrompt(business, isKnownCaller);
+        const basePrompt = selectPrompt(business, isKnownCaller);
+        const knowledgeAppendix = business.knowledge
+          ? `\n\n---\n\n# Knowledge Base\n\n${business.knowledge}`
+          : '';
+        const systemPrompt = basePrompt + knowledgeAppendix;
         const firstMessage = buildFirstMessage(business, firstName);
 
         // Prepend caller context block so the LLM can't forget it already has the name

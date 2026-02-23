@@ -1,14 +1,14 @@
 {
   "id": "demo",
-  "displayName": "Demo Company",
+  "displayName": "Onshore Marine Engineering Limited",
   "receptionistName": "Alex",
   "elevenLabsAgentId": "agent_3701kj3nhmexe7m9pxmje1bxt64x",
   "officePhone": "(09) 000-0000",
-  "address": "1 Demo Street, Auckland 1010",
+  "address": "Unit 7/36 William Pickering Drive, Rosedale, Auckland",
   "officeHours": {
     "timezone": "Pacific/Auckland",
     "start": "08:00",
-    "end": "17:00",
+    "end": "16:00",
     "days": [1, 2, 3, 4, 5]
   },
   "emailRecipients": ["rod.grant@i6.co.nz"],

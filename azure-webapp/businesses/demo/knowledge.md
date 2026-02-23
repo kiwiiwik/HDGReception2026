@@ -1,7 +1,7 @@
 # Onshore Marine Engineering Limited — Knowledge Base
 
 ## Contact & Location
-- **Phone:** (09) 000-0000
+- **Phone:** (09) 873-7123
 - **Address:** Unit 7/36 William Pickering Drive, Rosedale, Auckland
 - **Office Hours:** Monday–Friday, 8:00am–4:00pm (New Zealand Time)
 

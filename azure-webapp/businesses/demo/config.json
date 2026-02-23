@@ -8,7 +8,7 @@
   "officeHours": {
     "timezone": "Pacific/Auckland",
     "start": "08:00",
-    "end": "16:00",
+    "end": "22:00",
     "days": [1, 2, 3, 4, 5]
   },
   "emailRecipients": ["rod.grant@i6.co.nz"],

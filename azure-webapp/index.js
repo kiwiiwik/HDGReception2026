@@ -363,7 +363,7 @@ function handleIncomingCall(req, res) {
 
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Connect action="https://${host}/call-ended" method="POST">
+  <Connect>
     <Stream url="wss://${host}/media-stream?business=${esc(businessId)}">
       <Parameter name="caller_id" value="${esc(callerNumber)}" />
       <Parameter name="caller_name" value="${esc(knownName || '')}" />
@@ -662,130 +662,122 @@ app.post('/transfer', (req, res) => {
   res.set('Content-Type', 'text/xml').send(xml);
 });
 
-// Twilio StatusCallback: fetches ElevenLabs transcript and emails it to the business
-app.post('/call-ended', async (req, res) => {
-  const callSid = req.body.CallSid;
-  const callStatus = req.body.CallStatus;
-
-  // Return valid TwiML so Twilio doesn't complain regardless of whether it's
-  // called from <Connect action> or a phone-number StatusCallback
-  res.set('Content-Type', 'text/xml').status(200).send('<?xml version="1.0" encoding="UTF-8"?><Response/>');
-
-  if (!callSid || callStatus !== 'completed') return;
-
-  const callDuration = parseInt(req.body.CallDuration || '0', 10);
-  console.log(`[CallEnded] Call ${callSid} completed, duration: ${callDuration}s`);
-
-  if (callDuration < 5) {
-    console.warn(`[CallEnded] Call ${callSid} was only ${callDuration}s — skipping transcript`);
-    return;
-  }
-
-  // Look up business from the call record stored in /incoming-call
-  const callData = activeCallStore.get(callSid);
-  activeCallStore.delete(callSid);
-
-  const businessId = callData?.businessId || 'hdg';
-  let business;
-  try { business = getBusiness(businessId); }
-  catch (e) {
-    console.error(`[CallEnded] Unknown business "${businessId}" for call ${callSid}`);
-    return;
-  }
-
-  if (!ELEVENLABS_API_KEY) {
-    console.warn('[CallEnded] ELEVENLABS_API_KEY not set — skipping transcript');
+// ── Transcript helper ─────────────────────────────────────────────────────────
+// Fetches the most recent ElevenLabs conversation and emails the transcript.
+// Called from the WebSocket 'stop' event so it works without any Twilio callback config.
+async function sendTranscriptEmail(business, callSid, callDurationSecs, callData) {
+  if (!ELEVENLABS_API_KEY) return;
+  if (callDurationSecs < 5) {
+    console.warn(`[Transcript] Call ${callSid} was only ${callDurationSecs}s — skipping`);
     return;
   }
 
   // Wait for ElevenLabs to finish processing the conversation
   await new Promise(resolve => setTimeout(resolve, 15000));
 
-  try {
-    const agentId = business.config.elevenLabsAgentId;
-    const receptionistName = business.config.receptionistName;
+  const agentId = business.config.elevenLabsAgentId;
+  const receptionistName = business.config.receptionistName;
+  const logTag = `[Transcript:${business.config.id}]`;
 
-    const listResp = await axios.get(
-      `https://api.elevenlabs.io/v1/convai/conversations`,
-      { params: { agent_id: agentId, page_size: 10 }, headers: { 'xi-api-key': ELEVENLABS_API_KEY } }
-    );
+  const listResp = await axios.get(
+    `https://api.elevenlabs.io/v1/convai/conversations`,
+    { params: { agent_id: agentId, page_size: 10 }, headers: { 'xi-api-key': ELEVENLABS_API_KEY } }
+  );
 
-    const conversations = listResp.data.conversations || [];
-    if (conversations.length === 0) {
-      console.warn(`[CallEnded] No conversations found for agent ${agentId}`);
-      return;
-    }
-
-    const conv = conversations.find(c => c.status === 'done') || conversations[0];
-    const conversationId = conv.conversation_id;
-    const convStartTime = conv.start_time_unix_secs || conv.created_at_unix_secs || 0;
-    const nowSecs = Math.floor(Date.now() / 1000);
-    if (convStartTime && (nowSecs - convStartTime) > 120) {
-      console.warn(`[CallEnded] Most recent conversation is ${nowSecs - convStartTime}s old — skipping`);
-      return;
-    }
-
-    const convResp = await axios.get(
-      `https://api.elevenlabs.io/v1/convai/conversations/${conversationId}`,
-      { headers: { 'xi-api-key': ELEVENLABS_API_KEY } }
-    );
-
-    const conversation = convResp.data;
-    const transcript = conversation.transcript || [];
-
-    if (transcript.length === 0) {
-      console.warn(`[CallEnded] Empty transcript for conversation ${conversationId}`);
-      return;
-    }
-
-    const formattedTranscript = transcript
-      .filter(turn => turn.message && turn.message !== 'null')
-      .map(turn => {
-        const speaker = turn.role === 'agent' ? receptionistName : 'Caller';
-        const timeStr = turn.time_in_call_secs != null ? `[${formatTime(turn.time_in_call_secs)}]` : '';
-        return `${timeStr} ${speaker}: ${turn.message}`;
-      }).join('\n\n');
-
-    const timestamp = new Date().toLocaleString('en-NZ', { timeZone: 'Pacific/Auckland' });
-    const callerInfo = callData?.caller_name
-      ? `${callData.caller_name} (${callData.caller_phone})`
-      : req.body.From || `Unknown (Call SID: ${callSid})`;
-    const calleeInfo = callData?.callee_name || 'Unknown';
-    const analysis = conversation.analysis || {};
-    const duration = conv.call_duration_secs
-      ? formatTime(conv.call_duration_secs)
-      : req.body.CallDuration ? formatTime(parseInt(req.body.CallDuration)) : 'Unknown';
-
-    await sendEmail({
-      to: business.config.emailRecipients,
-      subject: `${receptionistName} Call Transcript — ${callerInfo}`,
-      body: [
-        `Call Transcript — ${timestamp}`,
-        '='.repeat(50),
-        '',
-        `Caller:    ${callerInfo}`,
-        `Requested: ${calleeInfo}`,
-        `Duration:  ${duration}`,
-        `Call SID:  ${callSid}`,
-        ...(analysis.call_successful != null ? [`Successful: ${analysis.call_successful}`] : []),
-        ...(analysis.transcript_summary ? [`Summary: ${analysis.transcript_summary}`] : []),
-        '',
-        '='.repeat(50),
-        'TRANSCRIPT',
-        '='.repeat(50),
-        '',
-        formattedTranscript,
-        '',
-        '='.repeat(50),
-        'End of transcript'
-      ].join('\n')
-    });
-    console.log(`[CallEnded] Transcript emailed to ${business.config.emailRecipients.join(', ')}`);
-    logInteraction(`Transcript for ${callSid} (${businessId}) emailed`);
-  } catch (err) {
-    console.error('[CallEnded] Failed to fetch/send transcript:', err.message);
-    logInteraction(`[ERROR] Transcript failed for ${callSid}: ${err.message}`);
+  const conversations = listResp.data.conversations || [];
+  if (conversations.length === 0) {
+    console.warn(`${logTag} No conversations found for agent ${agentId}`);
+    return;
   }
+
+  const conv = conversations.find(c => c.status === 'done') || conversations[0];
+  const conversationId = conv.conversation_id;
+  const convStartTime = conv.start_time_unix_secs || conv.created_at_unix_secs || 0;
+  const nowSecs = Math.floor(Date.now() / 1000);
+  if (convStartTime && (nowSecs - convStartTime) > 120) {
+    console.warn(`${logTag} Most recent conversation is ${nowSecs - convStartTime}s old — skipping`);
+    return;
+  }
+
+  const convResp = await axios.get(
+    `https://api.elevenlabs.io/v1/convai/conversations/${conversationId}`,
+    { headers: { 'xi-api-key': ELEVENLABS_API_KEY } }
+  );
+
+  const conversation = convResp.data;
+  const transcript = conversation.transcript || [];
+
+  if (transcript.length === 0) {
+    console.warn(`${logTag} Empty transcript for conversation ${conversationId}`);
+    return;
+  }
+
+  const formattedTranscript = transcript
+    .filter(turn => turn.message && turn.message !== 'null')
+    .map(turn => {
+      const speaker = turn.role === 'agent' ? receptionistName : 'Caller';
+      const timeStr = turn.time_in_call_secs != null ? `[${formatTime(turn.time_in_call_secs)}]` : '';
+      return `${timeStr} ${speaker}: ${turn.message}`;
+    }).join('\n\n');
+
+  const timestamp = new Date().toLocaleString('en-NZ', { timeZone: 'Pacific/Auckland' });
+  const callerInfo = callData?.caller_name
+    ? `${callData.caller_name} (${callData.caller_phone})`
+    : `Unknown (Call SID: ${callSid})`;
+  const calleeInfo = callData?.callee_name || 'Unknown';
+  const analysis = conversation.analysis || {};
+  const duration = conv.call_duration_secs
+    ? formatTime(conv.call_duration_secs)
+    : formatTime(callDurationSecs);
+
+  await sendEmail({
+    to: business.config.emailRecipients,
+    subject: `${receptionistName} Call Transcript — ${callerInfo}`,
+    body: [
+      `Call Transcript — ${timestamp}`,
+      '='.repeat(50),
+      '',
+      `Caller:    ${callerInfo}`,
+      `Requested: ${calleeInfo}`,
+      `Duration:  ${duration}`,
+      `Call SID:  ${callSid}`,
+      ...(analysis.call_successful != null ? [`Successful: ${analysis.call_successful}`] : []),
+      ...(analysis.transcript_summary ? [`Summary: ${analysis.transcript_summary}`] : []),
+      '',
+      '='.repeat(50),
+      'TRANSCRIPT',
+      '='.repeat(50),
+      '',
+      formattedTranscript,
+      '',
+      '='.repeat(50),
+      'End of transcript'
+    ].join('\n')
+  });
+  console.log(`${logTag} Transcript emailed to ${business.config.emailRecipients.join(', ')}`);
+  logInteraction(`Transcript for ${callSid} (${business.config.id}) emailed`);
+}
+
+// Twilio StatusCallback (optional): fires if phone number StatusCallback is configured in Twilio.
+// Transcript is also sent from the WebSocket 'stop' event, so this is a backup only.
+app.post('/call-ended', async (req, res) => {
+  res.status(200).send('OK');
+
+  const callSid = req.body.CallSid;
+  const callStatus = req.body.CallStatus;
+  if (!callSid || callStatus !== 'completed') return;
+
+  const callDuration = parseInt(req.body.CallDuration || '0', 10);
+  const callData = activeCallStore.get(callSid);
+  activeCallStore.delete(callSid);
+  const businessId = callData?.businessId || 'hdg';
+  let business;
+  try { business = getBusiness(businessId); }
+  catch (e) { return; }
+
+  sendTranscriptEmail(business, callSid, callDuration, callData).catch(err =>
+    console.error('[CallEnded] Transcript error:', err.message)
+  );
 });
 
 // Reload a business's directory from disk without restarting the server
@@ -927,6 +919,8 @@ wss.on('connection', (twilioWs, req) => {
   let elevenLabsWs = null;
   let elevenLabsReady = false;
   let audioQueue = [];
+  let callStartTime = null;
+  let wsCallSid = null;
 
   async function connectToElevenLabs(customParameters) {
     try {
@@ -1036,7 +1030,9 @@ wss.on('connection', (twilioWs, req) => {
       switch (data.event) {
         case 'start':
           streamSid = data.start.streamSid;
+          callStartTime = Date.now();
           const customParameters = data.start.customParameters || {};
+          wsCallSid = customParameters.call_sid || null;
 
           // Resolve business here — stream params are reliable (message body, not URL).
           // URL query param is preferred if present; stream param is the reliable fallback.
@@ -1065,6 +1061,13 @@ wss.on('connection', (twilioWs, req) => {
         case 'stop':
           console.log(`[WS:${businessId}] Twilio stream stopped`);
           if (elevenLabsWs) elevenLabsWs.close();
+          if (business && wsCallSid && callStartTime) {
+            const callDuration = Math.floor((Date.now() - callStartTime) / 1000);
+            const callData = activeCallStore.get(wsCallSid);
+            sendTranscriptEmail(business, wsCallSid, callDuration, callData).catch(err =>
+              console.error(`[WS:${businessId}] Transcript error:`, err.message)
+            );
+          }
           break;
       }
     } catch (err) {

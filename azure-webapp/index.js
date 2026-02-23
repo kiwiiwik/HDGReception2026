@@ -298,8 +298,10 @@ async function transferCall(callSid, toNumber) {
 // ── Call state ────────────────────────────────────────────────────────────────
 // activeCallStore: call_sid → call context (populated by /incoming-call, enriched by webhooks)
 // activeBridgeCalls: call_sid → bridge metadata (used to fill null system vars in webhooks)
+// transcriptSent: set of call_sids for which transcript email has already been sent (dedup guard)
 const activeCallStore = new Map();
 const activeBridgeCalls = new Map();
+const transcriptSent = new Set();
 
 setInterval(() => {
   const twoHoursAgo = Date.now() - 2 * 60 * 60 * 1000;
@@ -667,6 +669,8 @@ app.post('/transfer', (req, res) => {
 // Called from the WebSocket 'stop' event so it works without any Twilio callback config.
 async function sendTranscriptEmail(business, callSid, callDurationSecs, callData) {
   if (!ELEVENLABS_API_KEY) return;
+  if (transcriptSent.has(callSid)) return; // already sent — dedup guard
+  transcriptSent.add(callSid);
   if (callDurationSecs < 5) {
     console.warn(`[Transcript] Call ${callSid} was only ${callDurationSecs}s — skipping`);
     return;

@@ -363,7 +363,7 @@ function handleIncomingCall(req, res) {
 
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Connect>
+  <Connect action="https://${host}/call-ended" method="POST">
     <Stream url="wss://${host}/media-stream?business=${esc(businessId)}">
       <Parameter name="caller_id" value="${esc(callerNumber)}" />
       <Parameter name="caller_name" value="${esc(knownName || '')}" />

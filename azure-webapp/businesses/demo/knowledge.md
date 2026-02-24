@@ -1,54 +1,44 @@
-# Onshore Marine Engineering Limited — Knowledge Base
+# Acme Limited — Knowledge Base
 
 ## Contact & Location
-- **Phone:** (09) 873-7123
-- **Address:** Unit 7/36 William Pickering Drive, Rosedale, Auckland
-- **Office Hours:** Monday–Friday, 8:00am–4:00pm (New Zealand Time)
+- **Phone:** (09) 555-0123
+- **Address:** Level 5, 100 Queen Street, Auckland CBD, Auckland
+- **Office Hours:** Monday–Friday, 8:00am–5:00pm (New Zealand Time)
 
-Always use the address and phone number above when a caller asks. Do NOT use any other address or number, even if one appears elsewhere.
+Always use the address and phone number above when a caller asks.
 
 ## About the Company
-Onshore Marine Engineering Limited is a specialist marine engineering workshop based in Rosedale, Auckland. We service and repair marine diesel engines and associated drivetrain components for boats and vessels.
+Acme Limited is a leading widget supplier based in Auckland's CBD. We specialise in high-quality industrial and commercial widgets for a wide variety of applications.
 
-## Services
-- Marine diesel engine servicing and repair
-- Volvo Penta engine and drivetrain service
-- Gearbox inspection, repair, and replacement
-- Sterndrive service and repair
-- Saildrive service and repair
-- Marine generator servicing and repair
-- Pre-purchase sea trials and vessel inspections
-- Vessel management and scheduled maintenance programmes
-
-## Brands & Manufacturers Supported
-- Volvo Penta (specialist dealer/service agent)
-- Other major marine diesel brands — callers should enquire directly for specific brands
-
-## Staff Directory
-
-These are the only staff members. Do not invent or suggest names that are not on this list.
-
-- **Jake** — Manager
-- **Josh** — Manager
-- **Rod** — Administrator & Accounts
-
-When a caller asks to speak to "the manager", "a manager", or similar, ask if they have a preference between Jake or Josh, or offer to connect them with either one.
-When a caller asks for accounts, billing, invoices, or administration, connect them with Rod.
-Do not share staff email addresses or personal phone numbers under any circumstances.
+## Products & Services
+- Standard widgets (various sizes and specifications)
+- Custom widget manufacturing
+- Widget repair and maintenance services
+- Widget bulk orders and wholesale pricing
+- Technical support and product consultation
+- Same-day delivery available for Auckland metro area
 
 ## Common Caller Questions
 
-**Do you work on petrol engines?**
-No — Onshore Marine Engineering specialises in diesel engines only.
+**What types of widgets do you stock?**
+We carry a comprehensive range of standard widgets and can also make custom specifications. Callers should speak with the sales team for details about specific widget requirements.
 
-**Do you do mobile callouts?**
-Callers should speak to a staff member for information about mobile service availability.
+**Can I get a quote?**
+Yes! Transfer the call to our sales team or take a message with the caller's requirements, and Sarah or Mike will follow up with a quote.
 
-**Can I get a quote over the phone?**
-For quotes and technical assessments, the team will need more details about the vessel and the issue. Transfer the call or take a message so a technician can follow up.
+**Do you do custom orders?**
+Yes, we specialise in custom widget manufacturing. Speak with Sarah from our Sales team for a consultation.
 
-**Do you sell parts?**
-Parts enquiries should be directed to a staff member.
+**Can you deliver to my location?**
+For Auckland metro area, we offer same-day delivery. For locations outside Auckland, transfer to our operations team (Emily) for delivery options and timeframes.
 
-**Where are you located?**
-Unit 7/36 William Pickering Drive, Rosedale, Auckland. Rosedale is on the North Shore, near Albany.
+**How quickly can I get widgets?**
+Standard stock items can typically be dispatched same-day if ordered before 3pm. Custom orders depend on specifications — the team will give you a timeframe.
+
+## Staff Directory
+
+- **Sarah** — Sales Manager (sales enquiries, quotes, orders)
+- **Mike** — Customer Support (technical questions, support)
+- **Emily** — Operations (delivery, logistics, timing queries)
+
+When a caller asks to speak to the sales team, connect them with Sarah. For technical or support questions, connect with Mike. For delivery or order logistics, connect with Emily.

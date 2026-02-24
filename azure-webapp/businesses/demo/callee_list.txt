@@ -1,4 +1,4 @@
 Name,email,phone,role
-Jake,n@i6.co.nz,+64274084769,Manager
-Josh,n@i6.co.nz,+64279112911,Manager
-Rod,rod.grant@i6.co.nz,+6421747268,Administrator & Accounts
+Sarah,sarah.smith@acme.co.nz,+64220012345,Sales Manager
+Mike,mike.johnson@acme.co.nz,+64220012346,Customer Support
+Emily,emily.chen@acme.co.nz,+64220012347,Operations

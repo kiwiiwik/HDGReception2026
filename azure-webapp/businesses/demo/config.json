@@ -1,10 +1,10 @@
 {
   "id": "demo",
-  "displayName": "Onshore Marine Engineering Limited",
+  "displayName": "Acme Limited",
   "receptionistName": "Alex",
   "elevenLabsAgentId": "agent_3701kj3nhmexe7m9pxmje1bxt64x",
-  "officePhone": "(09) 873-7123",
-  "address": "Unit 7/36 William Pickering Drive, Rosedale, Auckland",
+  "officePhone": "(09) 555-0123",
+  "address": "Level 5, 100 Queen Street, Auckland CBD, Auckland",
   "officeHours": {
     "timezone": "Pacific/Auckland",
     "start": "08:00",

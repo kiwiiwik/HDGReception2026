@@ -1,4 +1,4 @@
 Name,email,phone,role
-Sarah,sarah.smith@acme.co.nz,+64220012345,Sales Manager
-Mike,mike.johnson@acme.co.nz,+64220012346,Customer Support
-Emily,emily.chen@acme.co.nz,+64220012347,Operations
+Sarah,n@i6.co.nz,+6421747268,Sales Manager
+Mike,n@i6.co.nz,+6421747268,Customer Support
+Emily,n@i6.co.nz,+6421747268,Operations

@@ -42,3 +42,5 @@ Standard stock items can typically be dispatched same-day if ordered before 3pm.
 - **Emily** — Operations (delivery, logistics, timing queries)
 
 When a caller asks to speak to the sales team, connect them with Sarah. For technical or support questions, connect with Mike. For delivery or order logistics, connect with Emily.
+
+Do not share staff phone numbers or email addresses with callers.

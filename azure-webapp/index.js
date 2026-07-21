@@ -397,16 +397,22 @@ function fillFromBridge(call_sid, fields) {
   return fields;
 }
 
+// MERGE, never replace. The bridge records each leg's conversation_id onto this
+// same entry, and a ring-reclaim call writes context twice (transfer, then message)
+// on one CallSid. Overwriting drops the conversation ids, so the transcript email
+// silently falls back to "most recent conversation" and only the last leg is sent.
+// Also preserves the original timestamp so call duration spans the whole call.
 function storeCallContext(call_sid, businessId, Callee_Name, Caller_Name, Caller_Phone, caller_id) {
-  if (call_sid) {
-    activeCallStore.set(call_sid, {
-      businessId,
-      callee_name: Callee_Name,
-      caller_name: Caller_Name,
-      caller_phone: Caller_Phone || caller_id,
-      timestamp: Date.now()
-    });
-  }
+  if (!call_sid) return;
+  const existing = activeCallStore.get(call_sid) || {};
+  activeCallStore.set(call_sid, {
+    ...existing,
+    businessId,
+    callee_name: Callee_Name || existing.callee_name,
+    caller_name: Caller_Name || existing.caller_name,
+    caller_phone: Caller_Phone || caller_id || existing.caller_phone,
+    timestamp: existing.timestamp || Date.now()
+  });
 }
 
 // ── Route handlers ────────────────────────────────────────────────────────────

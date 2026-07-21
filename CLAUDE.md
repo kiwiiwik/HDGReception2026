@@ -8,6 +8,7 @@ an Azure Web App to ElevenLabs conversational AI, and routed to staff or message
 Currently live businesses:
 - **HDG** — HDG Construction, Gibbons Rail and Total Rail Solutions (receptionist: Lauren)
 - **DEMO** — Demo Company (receptionist: Alex)
+- **ROD** — Rod Grant's personal line, +64 9 873 7123 (receptionist: Ava, ring-reclaim mode)
 
 ## Architecture
 ```
@@ -41,6 +42,7 @@ azure-webapp/businesses/
     prompt-hours-unknown.md      ← business hours, caller is unknown
     prompt-afterhours-known.md   ← after hours, caller is known
     prompt-afterhours-unknown.md ← after hours, caller is unknown
+    prompt-noanswer.md           ← OPTIONAL — ring-reclaim leg only (see Transfer Modes)
   demo/
     (same structure)
 ```
@@ -70,12 +72,47 @@ Business-specific (preferred — configure Twilio and ElevenLabs tools to use th
 
 Shared / legacy:
 - `POST /transfer`       — Twilio TwiML response for active call transfer
+  (`?mode=ring-reclaim&timeout=N&business=X&callee=Y` emits a timed `<Dial>` instead)
+- `POST /dial-result/:businessId` — Twilio `<Dial action>` callback for ring-reclaim
 - `POST /call-ended`     — Twilio StatusCallback — fetches transcript, emails it
 - `GET  /health`         — Shows all loaded businesses and their stats
 - `POST /reload-directory` — Hot-reload all businesses
 
 Legacy (no businessId) — defaults to `hdg` for backward compatibility:
 - `POST /incoming-call`, `/transfer-call`, `/send-message`, `/send-text`, `/send-email`
+
+## Transfer Modes
+Set per business via `config.json`:
+
+- **`"transferMode"` absent (default)** — blind transfer. `/transfer` returns
+  `<Dial>{number}</Dial>`; the agent leaves the call permanently. If the callee doesn't
+  answer, the caller lands in the callee's own voicemail. HDG and DEMO use this.
+
+- **`"transferMode": "ring-reclaim"`** — ring for `ringTimeout` seconds (default 25),
+  then take the caller back. ROD uses this.
+
+```
+Agent calls TransferCall_X
+  → /transfer-call/{id} marks pendingReclaim, redirects the live call
+    → /transfer?mode=ring-reclaim  →  <Dial timeout="25" action="/dial-result/{id}">
+      ├── answered → …call proceeds… → /dial-result [completed] → <Hangup/>
+      │                                 + summary email + transcript
+      └── no-answer / busy / failed → /dial-result
+            → new <Connect><Stream> with mode=noanswer & attempted_callee
+              → agent reopens on prompt-noanswer.md, takes a message,
+                calls SendMessage_X, ends the call
+```
+
+Three things this mode has to get right, all handled in `index.js`:
+1. **Transcript dedup** — redirecting the live call fires the WebSocket `stop` event.
+   `pendingReclaim` (call_sid → timestamp) suppresses the transcript email there so the
+   `transcriptSent` guard doesn't swallow the message leg, which shares the same CallSid.
+2. **Two conversations, one call** — each leg opens its own ElevenLabs conversation. The
+   bridge records every `conversation_id` into `activeCallStore[sid].conversationIds`, and
+   `sendTranscriptEmail` fetches them by ID and stitches them into one "Part 1 / Part 2"
+   email. The old "most recent conversation" lookup remains as a fallback only.
+3. **No premature success email** — in ring-reclaim mode `/transfer-call` skips the call
+   summary (the outcome isn't known while it's still ringing); `/dial-result` sends it.
 
 ## How Prompt Selection Works (server-side)
 At call time, Node.js checks:

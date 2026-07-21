@@ -53,7 +53,7 @@ Required fields:
 - `caller_id`: `{{system__caller_id}}`
 - `call_sid`: `{{system__call_sid}}`
 
-## `SendText`
+## `SendText_DEMO`
 Sends an SMS to the caller. Use only when the caller explicitly asks you to text them information. Do not send texts unsolicited.
 
 Required fields:

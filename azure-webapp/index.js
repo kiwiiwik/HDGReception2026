@@ -45,6 +45,13 @@ function formatTime(secs) {
   return `${mins}:${s.toString().padStart(2, '0')}`;
 }
 
+// XML-escape a value for safe interpolation into TwiML
+function escXml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
 // ── NZ Public Holidays ────────────────────────────────────────────────────────
 // Update annually. Includes Mondayised dates where applicable.
 const NZ_PUBLIC_HOLIDAYS = new Set([
@@ -169,6 +176,15 @@ function loadBusiness(businessId) {
     }
   }
 
+  // Optional fifth prompt — used only on the ring-reclaim leg, when a
+  // transfer rang out and the caller has been handed back to the agent.
+  // Businesses using "transferMode": "blind" never load this path.
+  try {
+    prompts['prompt-noanswer'] = fs.readFileSync(path.join(dir, 'prompt-noanswer.md'), 'utf-8');
+  } catch (e) {
+    prompts['prompt-noanswer'] = ''; // falls back to the afterhours prompt at call time
+  }
+
   // Load optional knowledge base — appended to the system prompt at call time
   let knowledge = '';
   try {
@@ -215,8 +231,14 @@ function getBusiness(businessId) {
 
 // Select the appropriate prompt based on time of day and whether the caller is known.
 // This replaces the LLM-side hours/mode detection from the old single-prompt approach.
-function selectPrompt(business, isKnownCaller) {
+function selectPrompt(business, isKnownCaller, isReclaimLeg) {
   const inHours = isBusinessHours(business.config);
+  // Reclaim leg: the transfer rang out and the caller is back with the agent.
+  // Fall back to the afterhours prompt if the business hasn't written a noanswer one.
+  if (isReclaimLeg) {
+    return business.prompts['prompt-noanswer']
+      || (isKnownCaller ? business.prompts['prompt-afterhours-known'] : business.prompts['prompt-afterhours-unknown']);
+  }
   if (inHours && isKnownCaller)  return business.prompts['prompt-hours-known'];
   if (inHours && !isKnownCaller) return business.prompts['prompt-hours-unknown'];
   if (!inHours && isKnownCaller) return business.prompts['prompt-afterhours-known'];
@@ -228,6 +250,13 @@ function buildFirstMessage(business, firstName) {
     return `Hi ${firstName}, thanks for calling. How can I help?`;
   }
   return `Hi there, you've called ${business.config.displayName}. How can I help you today?`;
+}
+
+// Opening line for the ring-reclaim leg — the caller has just heard ringing stop.
+function buildReclaimFirstMessage(attemptedCallee, firstName) {
+  const who = attemptedCallee || 'them';
+  const name = firstName ? `${firstName}, ` : '';
+  return `Sorry ${name}I couldn't get hold of ${who} just then. Can I take a message and have them call you back?`;
 }
 
 function resolveCallee(business, Callee_Name) {
@@ -280,11 +309,15 @@ async function sendSms({ to, body }) {
 }
 
 // ── Twilio call transfer ──────────────────────────────────────────────────────
-async function transferCall(callSid, toNumber) {
+// extraParams lets the ring-reclaim path pass mode/timeout/business/callee through
+// to the /transfer TwiML endpoint, which decides between a blind <Dial> and a
+// timed <Dial action=...> that hands the caller back to the agent on no-answer.
+async function transferCall(callSid, toNumber, extraParams = {}) {
   const twilioSid = process.env.TWILIO_ACCOUNT_SID;
   const twilioAuth = process.env.TWILIO_ACCOUNT_AUTH;
   const transferUrlBase = process.env.TRANSFER_URL_BASE;
-  const transferUrl = `${transferUrlBase}?to=${encodeURIComponent(toNumber)}`;
+  const query = new URLSearchParams({ to: toNumber, ...extraParams });
+  const transferUrl = `${transferUrlBase}?${query.toString()}`;
 
   console.log(`[Twilio] Transfer URL: ${transferUrl}`);
   await axios.post(
@@ -303,6 +336,14 @@ const activeCallStore = new Map();
 const activeBridgeCalls = new Map();
 const transcriptSent = new Set();
 
+// pendingReclaim: call_sid → timestamp. Set while a ring-reclaim <Dial> is in flight.
+// Redirecting the live call away from the media stream fires the WebSocket 'stop'
+// event, which would otherwise send the transcript email and set the transcriptSent
+// dedup flag — silently swallowing the message leg that follows on the SAME call_sid.
+// While a sid is in this map, 'stop' skips the transcript; /dial-result clears it and
+// owns the decision about when the transcript actually goes out.
+const pendingReclaim = new Map();
+
 setInterval(() => {
   const twoHoursAgo = Date.now() - 2 * 60 * 60 * 1000;
   for (const [sid, data] of activeCallStore) {
@@ -310,6 +351,9 @@ setInterval(() => {
   }
   for (const [sid, data] of activeBridgeCalls) {
     if (data.timestamp < twoHoursAgo) activeBridgeCalls.delete(sid);
+  }
+  for (const [sid, ts] of pendingReclaim) {
+    if (ts < twoHoursAgo) pendingReclaim.delete(sid);
   }
 }, 30 * 60 * 1000);
 
@@ -406,6 +450,11 @@ async function handleTransferCall(req, res) {
 
     const { toEmail, toNumber, calleeRole } = resolveCallee(business, Callee_Name);
 
+    // Ring-reclaim businesses ring for a fixed window and take a message on no-answer,
+    // rather than blind-transferring and losing the caller to the callee's voicemail.
+    const ringReclaim = business.config.transferMode === 'ring-reclaim';
+    const ringTimeout = business.config.ringTimeout || 25;
+
     // Notify callee by email that a call is being transferred
     await sendEmail({
       to: toEmail,
@@ -418,7 +467,9 @@ async function handleTransferCall(req, res) {
         `Caller Name: ${Caller_Name}`,
         `Caller Phone: ${Caller_Phone}`,
         '',
-        'Call is being transferred now.',
+        ringReclaim
+          ? `Ringing you now for ~${ringTimeout}s. If you don't pick up, ${business.config.receptionistName} will take a message and email it to you.`
+          : 'Call is being transferred now.',
         '',
         `Caller ID (Twilio): ${caller_id}`,
         `Call SID: ${call_sid}`
@@ -436,10 +487,21 @@ async function handleTransferCall(req, res) {
 
     if (call_sid && toNumber) {
       try {
-        await transferCall(call_sid, toNumber);
-        logInteraction(`[TransferCall:${businessId}] Transferred to ${toNumber}`);
+        if (ringReclaim) {
+          // Mark before redirecting — the WebSocket 'stop' fires as soon as Twilio
+          // pulls the call off the media stream, and must not send the transcript yet.
+          pendingReclaim.set(call_sid, Date.now());
+        }
+        await transferCall(call_sid, toNumber, ringReclaim ? {
+          mode: 'ring-reclaim',
+          timeout: String(ringTimeout),
+          business: businessId,
+          callee: Callee_Name
+        } : {});
+        logInteraction(`[TransferCall:${businessId}] ${ringReclaim ? `Ring-reclaim dial (${ringTimeout}s)` : 'Transferred'} to ${toNumber}`);
         transferStatus = 'success';
       } catch (err) {
+        if (ringReclaim) pendingReclaim.delete(call_sid);
         console.error(`[TransferCall:${businessId}] Twilio transfer failed:`, err.message);
         logInteraction(`[ERROR] Transfer failed (${businessId}): ${err.message}`);
         transferStatus = 'failed';
@@ -448,6 +510,25 @@ async function handleTransferCall(req, res) {
     } else if (!toNumber) {
       transferStatus = 'failed';
       transferError = 'No phone number found for this staff member';
+    }
+
+    // In ring-reclaim mode the outcome isn't known yet — the dial is still ringing.
+    // /dial-result sends the summary once Twilio reports how it actually ended, so
+    // we don't email "TRANSFERRED SUCCESSFULLY" for a call that rang out.
+    if (ringReclaim && transferStatus === 'success') {
+      const existing = activeCallStore.get(call_sid) || {};
+      activeCallStore.set(call_sid, {
+        ...existing,
+        callee_email: toEmail,
+        callee_number: toNumber,
+        callee_role: calleeRole,
+        ring_timeout: ringTimeout
+      });
+      return res.status(200).json({
+        status: 'ok',
+        transfer_status: 'ringing',
+        message: `Ringing ${Callee_Name} now. Stay silent while it rings — if they don't answer you will be reconnected to take a message.`
+      });
     }
 
     // Send call summary to business email recipients
@@ -658,10 +739,104 @@ app.post('/transfer', (req, res) => {
     return res.status(403).send('Transfer number not in staff directory');
   }
 
+  // Ring-reclaim mode: ring for a fixed window, then hand the caller back to the
+  // agent instead of falling through to the callee's own voicemail. The action URL
+  // fires on every dial outcome (answered-then-ended, no-answer, busy, failed).
+  if (req.query.mode === 'ring-reclaim') {
+    const timeout = Math.max(5, Math.min(120, parseInt(req.query.timeout || '25', 10) || 25));
+    const businessId = req.query.business || 'hdg';
+    const actionUrl = `https://${req.headers.host}/dial-result/${encodeURIComponent(businessId)}`
+      + `?callee=${encodeURIComponent(req.query.callee || '')}`;
+
+    const xml = `<Response><Dial timeout="${timeout}" action="${escXml(actionUrl)}" method="POST"><Number>${escXml(to)}</Number></Dial></Response>`;
+    console.log(`[Transfer] Ring-reclaim TwiML (${timeout}s) for ${to}:`, xml);
+    logInteraction(`Ring-reclaim dial (${businessId}) to ${to}, timeout ${timeout}s`);
+    return res.set('Content-Type', 'text/xml').send(xml);
+  }
+
   const xml = `<Response><Dial>${to}</Dial></Response>`;
   console.log('[Transfer] Returning TwiML:', xml);
   logInteraction(`Transfer XML generated for ${to}`);
   res.set('Content-Type', 'text/xml').send(xml);
+});
+
+// Twilio <Dial action> callback for ring-reclaim transfers.
+// Fires on every dial outcome. On answer-then-hangup we're done; on no-answer/busy/
+// failed we reconnect the caller to the agent in "couldn't reach them" mode rather
+// than letting the call fall through to the callee's own voicemail.
+app.post('/dial-result/:businessId', async (req, res) => {
+  const businessId = req.params.businessId;
+  const status = req.body.DialCallStatus;   // completed | no-answer | busy | failed | canceled
+  const callSid = req.body.CallSid;
+  const attemptedCallee = req.query.callee || '';
+
+  console.log(`[DialResult:${businessId}] SID ${callSid} → DialCallStatus=${status}`);
+  logInteraction(`[DialResult:${businessId}] ${callSid} → ${status} (callee: ${attemptedCallee || 'unknown'})`);
+
+  pendingReclaim.delete(callSid);
+
+  let business;
+  try { business = getBusiness(businessId); }
+  catch (e) {
+    return res.set('Content-Type', 'text/xml')
+      .send('<Response><Say>Sorry, something went wrong. Please call back shortly.</Say><Hangup/></Response>');
+  }
+
+  const callData = activeCallStore.get(callSid) || {};
+
+  // Answered, and the two parties have now hung up — the call is over.
+  // The WebSocket 'stop' was suppressed while the dial was in flight, so send
+  // the transcript from here instead.
+  if (status === 'completed') {
+    const timestamp = new Date().toLocaleString('en-NZ', { timeZone: 'Pacific/Auckland' });
+    sendEmail({
+      to: business.config.emailRecipients,
+      subject: `${business.config.receptionistName} Call Summary — ${callData.caller_name || 'Unknown'} → ${attemptedCallee || callData.callee_name || 'Unknown'} [CONNECTED]`,
+      body: [
+        `Call Summary — ${timestamp}`,
+        '='.repeat(50),
+        '',
+        `Caller:       ${callData.caller_name || 'Unknown'}`,
+        `Caller Phone: ${callData.caller_phone || req.body.From || 'Unknown'}`,
+        '',
+        `Requested:    ${attemptedCallee || callData.callee_name || 'Unknown'}`,
+        `Callee Phone: ${callData.callee_number || 'Unknown'}`,
+        '',
+        `Transfer:     CONNECTED — call answered and completed`,
+        '',
+        `Call SID:     ${callSid}`
+      ].join('\n')
+    }).catch(e => console.error(`[DialResult:${businessId}] Summary email failed:`, e.message));
+
+    const durationSecs = callData.timestamp ? Math.floor((Date.now() - callData.timestamp) / 1000) : 60;
+    sendTranscriptEmail(business, callSid, durationSecs, callData).catch(err =>
+      console.error(`[DialResult:${businessId}] Transcript error:`, err.message)
+    );
+
+    return res.set('Content-Type', 'text/xml').send('<Response><Hangup/></Response>');
+  }
+
+  // No answer / busy / failed — hand the caller back to the agent to take a message.
+  const callerNumber = callData.caller_phone || req.body.From || '';
+  const knownName = callData.caller_name || business.knownCallers[callerNumber] || '';
+
+  console.log(`[DialResult:${businessId}] Reclaiming call ${callSid} for ${knownName || 'unknown caller'}`);
+
+  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Connect>
+    <Stream url="wss://${req.headers.host}/media-stream?business=${escXml(businessId)}">
+      <Parameter name="caller_id" value="${escXml(callerNumber)}" />
+      <Parameter name="caller_name" value="${escXml(knownName)}" />
+      <Parameter name="call_sid" value="${escXml(callSid)}" />
+      <Parameter name="business_id" value="${escXml(businessId)}" />
+      <Parameter name="mode" value="noanswer" />
+      <Parameter name="attempted_callee" value="${escXml(attemptedCallee)}" />
+    </Stream>
+  </Connect>
+</Response>`;
+
+  res.set('Content-Type', 'text/xml').send(twiml);
 });
 
 // ── Transcript helper ─────────────────────────────────────────────────────────
@@ -683,56 +858,87 @@ async function sendTranscriptEmail(business, callSid, callDurationSecs, callData
   const receptionistName = business.config.receptionistName;
   const logTag = `[Transcript:${business.config.id}]`;
 
-  const listResp = await axios.get(
-    `https://api.elevenlabs.io/v1/convai/conversations`,
-    { params: { agent_id: agentId, page_size: 10 }, headers: { 'xi-api-key': ELEVENLABS_API_KEY } }
-  );
+  // A ring-reclaim call produces TWO ElevenLabs conversations on one CallSid: the
+  // leg before the dial, and the message-taking leg after it rings out. The bridge
+  // records each conversation_id as it starts, so we fetch them by ID and stitch
+  // them together — picking "the most recent conversation" would drop leg one.
+  let conversationIds = callData?.conversationIds || [];
 
-  const conversations = listResp.data.conversations || [];
-  if (conversations.length === 0) {
-    console.warn(`${logTag} No conversations found for agent ${agentId}`);
+  if (conversationIds.length === 0) {
+    // No IDs captured (legacy path / bridge restarted) — fall back to discovery.
+    const listResp = await axios.get(
+      `https://api.elevenlabs.io/v1/convai/conversations`,
+      { params: { agent_id: agentId, page_size: 10 }, headers: { 'xi-api-key': ELEVENLABS_API_KEY } }
+    );
+
+    const conversations = listResp.data.conversations || [];
+    if (conversations.length === 0) {
+      console.warn(`${logTag} No conversations found for agent ${agentId}`);
+      return;
+    }
+
+    const conv = conversations.find(c => c.status === 'done') || conversations[0];
+    const convStartTime = conv.start_time_unix_secs || conv.created_at_unix_secs || 0;
+    const nowSecs = Math.floor(Date.now() / 1000);
+    if (convStartTime && (nowSecs - convStartTime) > 120) {
+      console.warn(`${logTag} Most recent conversation is ${nowSecs - convStartTime}s old — skipping`);
+      return;
+    }
+    conversationIds = [conv.conversation_id];
+  }
+
+  const segments = [];
+  let totalDuration = 0;
+  let analysis = {};
+
+  for (const conversationId of conversationIds) {
+    try {
+      const convResp = await axios.get(
+        `https://api.elevenlabs.io/v1/convai/conversations/${conversationId}`,
+        { headers: { 'xi-api-key': ELEVENLABS_API_KEY } }
+      );
+      const conversation = convResp.data;
+      const transcript = conversation.transcript || [];
+      if (transcript.length === 0) {
+        console.warn(`${logTag} Empty transcript for conversation ${conversationId}`);
+        continue;
+      }
+      totalDuration += conversation.metadata?.call_duration_secs || 0;
+      // Keep the last segment's analysis — it reflects how the call actually ended
+      if (conversation.analysis) analysis = conversation.analysis;
+
+      segments.push(transcript
+        .filter(turn => turn.message && turn.message !== 'null')
+        .map(turn => {
+          const speaker = turn.role === 'agent' ? receptionistName : 'Caller';
+          const timeStr = turn.time_in_call_secs != null ? `[${formatTime(turn.time_in_call_secs)}]` : '';
+          return `${timeStr} ${speaker}: ${turn.message}`;
+        }).join('\n\n'));
+    } catch (err) {
+      console.error(`${logTag} Failed to fetch conversation ${conversationId}:`, err.message);
+    }
+  }
+
+  if (segments.length === 0) {
+    console.warn(`${logTag} No transcript content for call ${callSid}`);
     return;
   }
 
-  const conv = conversations.find(c => c.status === 'done') || conversations[0];
-  const conversationId = conv.conversation_id;
-  const convStartTime = conv.start_time_unix_secs || conv.created_at_unix_secs || 0;
-  const nowSecs = Math.floor(Date.now() / 1000);
-  if (convStartTime && (nowSecs - convStartTime) > 120) {
-    console.warn(`${logTag} Most recent conversation is ${nowSecs - convStartTime}s old — skipping`);
-    return;
-  }
-
-  const convResp = await axios.get(
-    `https://api.elevenlabs.io/v1/convai/conversations/${conversationId}`,
-    { headers: { 'xi-api-key': ELEVENLABS_API_KEY } }
-  );
-
-  const conversation = convResp.data;
-  const transcript = conversation.transcript || [];
-
-  if (transcript.length === 0) {
-    console.warn(`${logTag} Empty transcript for conversation ${conversationId}`);
-    return;
-  }
-
-  const formattedTranscript = transcript
-    .filter(turn => turn.message && turn.message !== 'null')
-    .map(turn => {
-      const speaker = turn.role === 'agent' ? receptionistName : 'Caller';
-      const timeStr = turn.time_in_call_secs != null ? `[${formatTime(turn.time_in_call_secs)}]` : '';
-      return `${timeStr} ${speaker}: ${turn.message}`;
-    }).join('\n\n');
+  const formattedTranscript = segments.length === 1
+    ? segments[0]
+    : segments.map((s, i) => {
+        const label = i === 0
+          ? `--- Part ${i + 1} of ${segments.length} (before transfer attempt) ---`
+          : `--- Part ${i + 1} of ${segments.length} (after no answer — taking a message) ---`;
+        return `${label}\n\n${s}`;
+      }).join('\n\n');
 
   const timestamp = new Date().toLocaleString('en-NZ', { timeZone: 'Pacific/Auckland' });
   const callerInfo = callData?.caller_name
     ? `${callData.caller_name} (${callData.caller_phone})`
     : `Unknown (Call SID: ${callSid})`;
   const calleeInfo = callData?.callee_name || 'Unknown';
-  const analysis = conversation.analysis || {};
-  const duration = conv.call_duration_secs
-    ? formatTime(conv.call_duration_secs)
-    : formatTime(callDurationSecs);
+  const duration = totalDuration ? formatTime(totalDuration) : formatTime(callDurationSecs);
 
   await sendEmail({
     to: business.config.emailRecipients,
@@ -772,6 +978,9 @@ app.post('/call-ended', async (req, res) => {
   if (!callSid || callStatus !== 'completed') return;
 
   const callDuration = parseInt(req.body.CallDuration || '0', 10);
+  // Covers the caller-hung-up-mid-ring case: Twilio never requests the <Dial> action
+  // URL, so /dial-result never runs and the flag would otherwise stay set forever.
+  pendingReclaim.delete(callSid);
   const callData = activeCallStore.get(callSid);
   activeCallStore.delete(callSid);
   const businessId = callData?.businessId || 'hdg';
@@ -969,19 +1178,30 @@ wss.on('connection', (twilioWs, req) => {
           timestamp: Date.now()
         });
 
+        // Reclaim leg: this call already rang the callee and they didn't pick up.
+        // Set by /dial-result, never by the LLM.
+        const isReclaimLeg = customParameters.mode === 'noanswer';
+        const attemptedCallee = customParameters.attempted_callee || '';
+
         // Select prompt based on time of day and whether caller is known
         const isKnownCaller = !!firstName;
-        const basePrompt = selectPrompt(business, isKnownCaller);
+        const basePrompt = selectPrompt(business, isKnownCaller, isReclaimLeg);
         const knowledgeAppendix = business.knowledge
           ? `\n\n---\n\n# Knowledge Base\n\n${business.knowledge}`
           : '';
         const systemPrompt = basePrompt + knowledgeAppendix;
-        const firstMessage = buildFirstMessage(business, firstName);
+        const firstMessage = isReclaimLeg
+          ? buildReclaimFirstMessage(attemptedCallee, firstName)
+          : buildFirstMessage(business, firstName);
 
         // Prepend caller context block so the LLM can't forget it already has the name
-        const callerContextBlock = firstName
+        let callerContextBlock = firstName
           ? `[CALLER CONTEXT — THIS TAKES PRIORITY: The caller has been identified. Their full name is "${callerName}". You have already greeted them as "${firstName}" in your opening message. Do NOT ask for their name at any point during this call.]\n\n`
           : '';
+
+        if (isReclaimLeg) {
+          callerContextBlock += `[CALL STATE — THIS TAKES PRIORITY: You already spoke with this caller earlier in this same call. You attempted to connect them to ${attemptedCallee || 'the person they asked for'} and the phone rang out unanswered. You have ALREADY apologised for that in your opening message. Do NOT greet them again, do NOT ask who they want to speak to, and do NOT attempt another transfer. Your only job now is to take a message and send it. ${firstName ? `Their name is "${callerName}" — do not ask for it again.` : 'Ask for their name if you do not have it.'}]\n\n`;
+        }
 
         const agentOverride = { first_message: firstMessage };
         if (systemPrompt) {
@@ -1008,9 +1228,18 @@ wss.on('connection', (twilioWs, req) => {
         try {
           const msg = JSON.parse(data);
           switch (msg.type) {
-            case 'conversation_initiation_metadata':
-              console.log(`[WS:${businessId}] ElevenLabs conversation initiated`);
+            case 'conversation_initiation_metadata': {
+              // Record the conversation id against the CallSid. A ring-reclaim call
+              // produces one id per leg; sendTranscriptEmail stitches them together.
+              const convId = msg.conversation_initiation_metadata_event?.conversation_id;
+              console.log(`[WS:${businessId}] ElevenLabs conversation initiated${convId ? ` (${convId})` : ''}`);
+              if (convId && wsCallSid) {
+                const entry = activeCallStore.get(wsCallSid) || { businessId, timestamp: Date.now() };
+                entry.conversationIds = [...(entry.conversationIds || []), convId];
+                activeCallStore.set(wsCallSid, entry);
+              }
               break;
+            }
             case 'audio':
               if (msg.audio_event?.audio_base_64) {
                 const pcmBuf  = Buffer.from(msg.audio_event.audio_base_64, 'base64');
@@ -1082,8 +1311,17 @@ wss.on('connection', (twilioWs, req) => {
         case 'stop':
           console.log(`[WS:${businessId}] Twilio stream stopped`);
           if (elevenLabsWs) elevenLabsWs.close();
+          // A ring-reclaim dial is in flight: this 'stop' is Twilio pulling the call
+          // off the stream to ring the callee, not the call ending. Sending the
+          // transcript now would set the dedup flag and swallow the message leg.
+          if (wsCallSid && pendingReclaim.has(wsCallSid)) {
+            console.log(`[WS:${businessId}] Stream stopped for ring-reclaim dial — deferring transcript to /dial-result`);
+            break;
+          }
           if (business && wsCallSid && callStartTime) {
-            const callDuration = Math.floor((Date.now() - callStartTime) / 1000);
+            // Span the whole call, not just this leg, when we know when it started
+            const storedStart = activeCallStore.get(wsCallSid)?.timestamp;
+            const callDuration = Math.floor((Date.now() - (storedStart || callStartTime)) / 1000);
             const callData = activeCallStore.get(wsCallSid);
             sendTranscriptEmail(business, wsCallSid, callDuration, callData).catch(err =>
               console.error(`[WS:${businessId}] Transcript error:`, err.message)

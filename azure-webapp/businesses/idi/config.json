@@ -1,0 +1,21 @@
+{
+  "id": "idi",
+  "displayName": "Intelligent Document Imaging",
+  "receptionistName": "Heather",
+  "elevenLabsAgentId": "agent_9401ky30y52eevxbt9n08k7d1vgv",
+  "officePhone": "(09) 873-7123",
+  "address": "Auckland, New Zealand",
+  "officeHours": {
+    "timezone": "Pacific/Auckland",
+    "start": "07:00",
+    "end": "21:00",
+    "days": [0, 1, 2, 3, 4, 5, 6]
+  },
+  "greeting": "Hi, thanks for calling EYE DEE EYE. I imagine you'd like to speak with a human, not an AI. Please hold the line while I transfer you — and if nobody can pick up, I'll take a message.",
+  "greetingKnown": "Hi {firstName}, thanks for calling EYE DEE EYE. Let me put you through now.",
+  "transferMode": "ring-reclaim",
+  "_ringTimeout_note": "Measured 2026-07-22: Skinny voicemail answered after 15.0s of ringing. Must stay below that, or voicemail answers first, Twilio reports DialCallStatus=completed, and the reclaim never fires. Raise to 25 only after re-measuring with the no-answer divert cancelled.",
+  "ringTimeout": 10,
+  "emailRecipients": ["rod.grant.us@gmail.com"],
+  "fallbackEmail": "rod.grant.us@gmail.com"
+}

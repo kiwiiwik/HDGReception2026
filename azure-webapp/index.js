@@ -245,11 +245,18 @@ function selectPrompt(business, isKnownCaller, isReclaimLeg) {
   return business.prompts['prompt-afterhours-unknown'];
 }
 
+// A business can set its own opening line in config.json — "greeting" for unknown
+// callers, "greetingKnown" (with a {firstName} placeholder) for recognised ones.
+// Falls back to the generic wording when neither is set.
 function buildFirstMessage(business, firstName) {
+  const { greeting, greetingKnown, displayName } = business.config;
   if (firstName) {
+    if (greetingKnown) return greetingKnown.replace(/\{firstName\}/g, firstName);
+    if (greeting) return greeting;
     return `Hi ${firstName}, thanks for calling. How can I help?`;
   }
-  return `Hi there, you've called ${business.config.displayName}. How can I help you today?`;
+  if (greeting) return greeting;
+  return `Hi there, you've called ${displayName}. How can I help you today?`;
 }
 
 // Opening line for the ring-reclaim leg — the caller has just heard ringing stop.
@@ -277,6 +284,9 @@ function saveKnownCaller(business, phone, name) {
   const normalPhone = phone.trim();
   const normalName = name.trim();
   if (!normalPhone || !normalName) return;
+  // Never persist the placeholder used when a caller transfers without giving a
+  // name — it would be read back as their name and greeted on every later call.
+  if (/^unknown( caller)?$/i.test(normalName)) return;
   if (business.knownCallers[normalPhone]) return; // first identification wins
 
   business.knownCallers[normalPhone] = normalName;
@@ -443,10 +453,14 @@ async function handleTransferCall(req, res) {
 
     console.log(`[TransferCall:${businessId}] Payload:`, req.body);
 
-    if (!Callee_Name || !Caller_Name) {
-      console.error(`[TransferCall:${businessId}] Missing required fields:`, { Callee_Name, Caller_Name });
-      return res.status(400).send('Missing required fields: Callee_Name, Caller_Name');
+    // Caller_Name is deliberately optional. Businesses that transfer immediately
+    // (no "who's calling?" step) legitimately have no name yet — rejecting those
+    // would fail every transfer and push every caller to voicemail.
+    if (!Callee_Name) {
+      console.error(`[TransferCall:${businessId}] Missing required field: Callee_Name`);
+      return res.status(400).send('Missing required field: Callee_Name');
     }
+    if (!Caller_Name) Caller_Name = 'Unknown caller';
 
     const { toEmail, toNumber, calleeRole } = resolveCallee(business, Callee_Name);
 
@@ -591,10 +605,12 @@ async function handleSendMessage(req, res) {
 
     console.log(`[SendMessage:${businessId}] Payload:`, req.body);
 
-    if (!Callee_Name || !Caller_Name) {
-      console.error(`[SendMessage:${businessId}] Missing required fields:`, { Callee_Name, Caller_Name });
-      return res.status(400).send('Missing required fields: Callee_Name, Caller_Name');
+    // Same reasoning as /transfer-call: never lose a message over a missing name.
+    if (!Callee_Name) {
+      console.error(`[SendMessage:${businessId}] Missing required field: Callee_Name`);
+      return res.status(400).send('Missing required field: Callee_Name');
     }
+    if (!Caller_Name) Caller_Name = 'Unknown caller';
 
     const { toEmail, toNumber, calleeRole } = resolveCallee(business, Callee_Name);
 

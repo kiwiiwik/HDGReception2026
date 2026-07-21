@@ -8,7 +8,8 @@ an Azure Web App to ElevenLabs conversational AI, and routed to staff or message
 Currently live businesses:
 - **HDG** — HDG Construction, Gibbons Rail and Total Rail Solutions (receptionist: Lauren)
 - **DEMO** — Demo Company (receptionist: Alex)
-- **ROD** — Rod Grant's personal line, +64 9 873 7123 (receptionist: Ava, ring-reclaim mode)
+- **IDI** — Intelligent Document Imaging, +64 9 873 7123 (receptionist: Heather, ring-reclaim mode,
+  transfers immediately to Rod's mobile without asking the caller's name)
 
 ## Architecture
 ```
@@ -61,6 +62,16 @@ azure-webapp/businesses/
   "fallbackEmail": "rod.grant@i6.co.nz"
 }
 ```
+
+Optional fields:
+- `greeting` — custom opening line for unknown callers. Without it, a generic line is built
+  from `displayName`. **The ElevenLabs dashboard "First message" box is never used** — the
+  bridge always overrides it, so set the wording here.
+- `greetingKnown` — opening line for recognised callers; `{firstName}` is substituted.
+- `transferMode` / `ringTimeout` — see Transfer Modes below.
+
+Note the same applies to the dashboard **System prompt**: it is a fallback for when
+overrides fail. Editing it has no effect on live calls — edit the `prompt-*.md` files.
 
 ## API Endpoints
 Business-specific (preferred — configure Twilio and ElevenLabs tools to use these):

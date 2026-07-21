@@ -268,10 +268,18 @@ function buildFirstMessage(business, firstName) {
 }
 
 // Opening line for the ring-reclaim leg — the caller has just heard ringing stop.
-function buildReclaimFirstMessage(attemptedCallee, firstName) {
+// A business can override the wording with "reclaimGreeting" in config.json, using
+// {callee} and {firstName}; {firstName} collapses cleanly when the caller is unknown.
+function buildReclaimFirstMessage(business, attemptedCallee, firstName) {
   const who = attemptedCallee || 'them';
-  const name = firstName ? `${firstName}, ` : '';
-  return `Sorry ${name}I couldn't get hold of ${who} just then. Can I take a message and have them call you back?`;
+  const template = business?.config?.reclaimGreeting
+    || `Sorry about that{firstName} — I couldn't get hold of {callee} just then. Can I take a message?`;
+  return template
+    .replace(/\{callee\}/g, who)
+    .replace(/\{firstName\}/g, firstName ? ` ${firstName}` : '')
+    .replace(/\s+([,.!?])/g, '$1')   // tidy punctuation left by an empty name
+    .replace(/\s{2,}/g, ' ')
+    .trim();
 }
 
 function resolveCallee(business, Callee_Name) {
@@ -1222,7 +1230,7 @@ wss.on('connection', (twilioWs, req) => {
           : '';
         const systemPrompt = basePrompt + knowledgeAppendix;
         const firstMessage = isReclaimLeg
-          ? buildReclaimFirstMessage(attemptedCallee, firstName)
+          ? buildReclaimFirstMessage(business, attemptedCallee, firstName)
           : buildFirstMessage(business, firstName);
 
         // Prepend caller context block so the LLM can't forget it already has the name

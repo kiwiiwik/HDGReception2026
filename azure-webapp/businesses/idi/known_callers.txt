@@ -1,2 +1,2 @@
-# Local seed only. On Azure the live file lives at /home/data/rod/known_callers.txt
+# Local seed only. On Azure the live file lives at /home/data/idi/known_callers.txt
 # Format: +64xxxxxxxxx,Full Name

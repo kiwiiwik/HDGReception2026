@@ -45,6 +45,14 @@ function formatTime(secs) {
   return `${mins}:${s.toString().padStart(2, '0')}`;
 }
 
+// "Unknown caller" is a display placeholder used in emails when a caller transfers
+// without giving a name. It must never be treated as an actual name: stored as
+// caller_name it gets read back by the ring-reclaim leg, split on the space, and
+// spoken at the caller as "Sorry Unknown, I couldn't get hold of…".
+function isPlaceholderName(name) {
+  return /^\s*unknown(\s+caller)?\s*$/i.test(String(name || ''));
+}
+
 // XML-escape a value for safe interpolation into TwiML
 function escXml(s) {
   return String(s == null ? '' : s)
@@ -284,9 +292,7 @@ function saveKnownCaller(business, phone, name) {
   const normalPhone = phone.trim();
   const normalName = name.trim();
   if (!normalPhone || !normalName) return;
-  // Never persist the placeholder used when a caller transfers without giving a
-  // name — it would be read back as their name and greeted on every later call.
-  if (/^unknown( caller)?$/i.test(normalName)) return;
+  if (isPlaceholderName(normalName)) return;
   if (business.knownCallers[normalPhone]) return; // first identification wins
 
   business.knownCallers[normalPhone] = normalName;
@@ -460,7 +466,10 @@ async function handleTransferCall(req, res) {
       console.error(`[TransferCall:${businessId}] Missing required field: Callee_Name`);
       return res.status(400).send('Missing required field: Callee_Name');
     }
-    if (!Caller_Name) Caller_Name = 'Unknown caller';
+    // Display-only. Never assign this back into Caller_Name: it would be stored as
+    // the call's caller_name, and the ring-reclaim leg reads that back to build its
+    // greeting — the caller gets addressed as "Unknown" for the rest of the call.
+    const callerLabel = Caller_Name || 'Unknown caller';
 
     const { toEmail, toNumber, calleeRole } = resolveCallee(business, Callee_Name);
 
@@ -472,13 +481,13 @@ async function handleTransferCall(req, res) {
     // Notify callee by email that a call is being transferred
     await sendEmail({
       to: toEmail,
-      subject: `${business.config.receptionistName} — Incoming call from ${Caller_Name}`,
+      subject: `${business.config.receptionistName} — Incoming call from ${callerLabel}`,
       body: [
         `Callee: ${Callee_Name}`,
         `Callee Phone: ${toNumber || 'Unknown'}`,
         `Callee Role: ${calleeRole}`,
         '',
-        `Caller Name: ${Caller_Name}`,
+        `Caller Name: ${callerLabel}`,
         `Caller Phone: ${Caller_Phone}`,
         '',
         ringReclaim
@@ -490,7 +499,7 @@ async function handleTransferCall(req, res) {
       ].join('\n')
     });
     console.log(`[TransferCall:${businessId}] Notification sent to ${toEmail}`);
-    logInteraction(`[TransferCall:${businessId}] ${Caller_Name} → ${Callee_Name} | to: ${toEmail} | SID: ${call_sid}`);
+    logInteraction(`[TransferCall:${businessId}] ${callerLabel} → ${Callee_Name} | to: ${toEmail} | SID: ${call_sid}`);
 
     storeCallContext(call_sid, businessId, Callee_Name, Caller_Name, Caller_Phone, caller_id);
     saveKnownCaller(business, Caller_Phone || caller_id, Caller_Name);
@@ -550,12 +559,12 @@ async function handleTransferCall(req, res) {
     const statusLabel = transferStatus === 'success' ? 'TRANSFERRED SUCCESSFULLY' : 'TRANSFER FAILED';
     await sendEmail({
       to: business.config.emailRecipients,
-      subject: `${business.config.receptionistName} Call Summary — ${Caller_Name} → ${Callee_Name} [${statusLabel}]`,
+      subject: `${business.config.receptionistName} Call Summary — ${callerLabel} → ${Callee_Name} [${statusLabel}]`,
       body: [
         `Call Summary — ${timestamp}`,
         '='.repeat(50),
         '',
-        `Caller:       ${Caller_Name}`,
+        `Caller:       ${callerLabel}`,
         `Caller Phone: ${Caller_Phone || caller_id || 'Unknown'}`,
         '',
         `Requested:    ${Callee_Name}`,
@@ -610,7 +619,9 @@ async function handleSendMessage(req, res) {
       console.error(`[SendMessage:${businessId}] Missing required field: Callee_Name`);
       return res.status(400).send('Missing required field: Callee_Name');
     }
-    if (!Caller_Name) Caller_Name = 'Unknown caller';
+    // Display-only — see the note in handleTransferCall. Assigning it back into
+    // Caller_Name would poison the stored call context with a fake name.
+    const callerLabel = Caller_Name || 'Unknown caller';
 
     const { toEmail, toNumber, calleeRole } = resolveCallee(business, Callee_Name);
 
@@ -622,7 +633,7 @@ async function handleSendMessage(req, res) {
         `Callee Phone: ${toNumber || 'Unknown'}`,
         `Callee Role: ${calleeRole}`,
         '',
-        `Caller Name: ${Caller_Name}`,
+        `Caller Name: ${callerLabel}`,
         `Caller Phone: ${Caller_Phone}`,
         `Caller Message: ${Caller_Message}`,
         '',
@@ -631,7 +642,7 @@ async function handleSendMessage(req, res) {
       ].join('\n')
     });
     console.log(`[SendMessage:${businessId}] Message sent to ${toEmail}`);
-    logInteraction(`[SendMessage:${businessId}] ${Caller_Name} → ${Callee_Name} | "${Caller_Message}" | SID: ${call_sid}`);
+    logInteraction(`[SendMessage:${businessId}] ${callerLabel} → ${Callee_Name} | "${Caller_Message}" | SID: ${call_sid}`);
 
     storeCallContext(call_sid, businessId, Callee_Name, Caller_Name, Caller_Phone, caller_id);
     saveKnownCaller(business, Caller_Phone || caller_id, Caller_Name);
@@ -639,12 +650,12 @@ async function handleSendMessage(req, res) {
     const timestamp = new Date().toLocaleString('en-NZ', { timeZone: 'Pacific/Auckland' });
     await sendEmail({
       to: business.config.emailRecipients,
-      subject: `${business.config.receptionistName} Call Summary — ${Caller_Name} → ${Callee_Name} [MESSAGE TAKEN]`,
+      subject: `${business.config.receptionistName} Call Summary — ${callerLabel} → ${Callee_Name} [MESSAGE TAKEN]`,
       body: [
         `Call Summary — ${timestamp}`,
         '='.repeat(50),
         '',
-        `Caller:       ${Caller_Name}`,
+        `Caller:       ${callerLabel}`,
         `Caller Phone: ${Caller_Phone || caller_id || 'Unknown'}`,
         '',
         `Requested:    ${Callee_Name}`,
@@ -834,7 +845,8 @@ app.post('/dial-result/:businessId', async (req, res) => {
 
   // No answer / busy / failed — hand the caller back to the agent to take a message.
   const callerNumber = callData.caller_phone || req.body.From || '';
-  const knownName = callData.caller_name || business.knownCallers[callerNumber] || '';
+  let knownName = callData.caller_name || business.knownCallers[callerNumber] || '';
+  if (isPlaceholderName(knownName)) knownName = '';
 
   console.log(`[DialResult:${businessId}] Reclaiming call ${callSid} for ${knownName || 'unknown caller'}`);
 
@@ -1182,14 +1194,17 @@ wss.on('connection', (twilioWs, req) => {
         const callSid    = customParameters.call_sid  || '';
         const callerId   = customParameters.caller_id || '';
         const callerName = customParameters.caller_name || '';
-        const firstName  = callerName ? callerName.split(' ')[0] : '';
+        // Last line of defence: a placeholder here would be greeted as a real name
+        // and asserted in the [CALLER CONTEXT] block for the whole call.
+        const callerNameSafe = isPlaceholderName(callerName) ? '' : callerName;
+        const firstName  = callerNameSafe ? callerNameSafe.split(' ')[0] : '';
 
         // Store bridge metadata keyed by call_sid so webhooks can fill null system vars
         const bridgeKey = callSid || `bridge-${Date.now()}`;
         activeBridgeCalls.set(bridgeKey, {
           caller_id: callerId,
           call_sid: callSid,
-          caller_name: callerName,
+          caller_name: callerNameSafe,
           businessId,
           timestamp: Date.now()
         });
@@ -1212,11 +1227,11 @@ wss.on('connection', (twilioWs, req) => {
 
         // Prepend caller context block so the LLM can't forget it already has the name
         let callerContextBlock = firstName
-          ? `[CALLER CONTEXT — THIS TAKES PRIORITY: The caller has been identified. Their full name is "${callerName}". You have already greeted them as "${firstName}" in your opening message. Do NOT ask for their name at any point during this call.]\n\n`
+          ? `[CALLER CONTEXT — THIS TAKES PRIORITY: The caller has been identified. Their full name is "${callerNameSafe}". You have already greeted them as "${firstName}" in your opening message. Do NOT ask for their name at any point during this call.]\n\n`
           : '';
 
         if (isReclaimLeg) {
-          callerContextBlock += `[CALL STATE — THIS TAKES PRIORITY: You already spoke with this caller earlier in this same call. You attempted to connect them to ${attemptedCallee || 'the person they asked for'} and the phone rang out unanswered. You have ALREADY apologised for that in your opening message. Do NOT greet them again, do NOT ask who they want to speak to, and do NOT attempt another transfer. Your only job now is to take a message and send it. ${firstName ? `Their name is "${callerName}" — do not ask for it again.` : 'Ask for their name if you do not have it.'}]\n\n`;
+          callerContextBlock += `[CALL STATE — THIS TAKES PRIORITY: You already spoke with this caller earlier in this same call. You attempted to connect them to ${attemptedCallee || 'the person they asked for'} and the phone rang out unanswered. You have ALREADY apologised for that in your opening message. Do NOT greet them again, do NOT ask who they want to speak to, and do NOT attempt another transfer. Your only job now is to take a message and send it. ${firstName ? `Their name is "${callerNameSafe}" — do not ask for it again.` : 'Ask for their name if you do not have it.'}]\n\n`;
         }
 
         const agentOverride = { first_message: firstMessage };
@@ -1227,11 +1242,11 @@ wss.on('connection', (twilioWs, req) => {
         const initMessage = {
           type: 'conversation_initiation_client_data',
           conversation_config_override: { agent: agentOverride },
-          custom_llm_extra_body: { caller_name: callerName, caller_id: callerId }
+          custom_llm_extra_body: { caller_name: callerNameSafe, caller_id: callerId }
         };
 
         elevenLabsWs.send(JSON.stringify(initMessage));
-        console.log(`[WS:${businessId}] Sent init — caller="${callerName || 'unknown'}", inHours=${isBusinessHours(business.config)}, known=${isKnownCaller}`);
+        console.log(`[WS:${businessId}] Sent init — caller="${callerNameSafe || 'unknown'}", inHours=${isBusinessHours(business.config)}, known=${isKnownCaller}`);
 
         elevenLabsReady = true;
         for (const chunk of audioQueue) {

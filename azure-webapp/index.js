@@ -204,6 +204,8 @@ function loadBusiness(businessId) {
   const validPhoneNumbers = new Set(
     Object.values(calleeDirectory).map(e => e.phone).filter(Boolean)
   );
+  // The failover number is dialled via /transfer too, which only accepts known numbers
+  if (config.failoverNumber) validPhoneNumbers.add(config.failoverNumber);
 
   return { config, calleeDirectory, knownCallers, knownCallersPath, prompts, knowledge, validPhoneNumbers };
 }
@@ -1173,6 +1175,68 @@ async function getSignedUrl(agentId) {
   return resp.data.signed_url;
 }
 
+// Readable reason for an ElevenLabs failure (HTTP status + API detail). Never the key.
+function describeElevenLabsError(err) {
+  const status = err.response?.status;
+  const detail = err.response?.data?.detail;
+  const detailText = typeof detail === 'string' ? detail : (detail?.message || detail?.status || '');
+  return [status && `HTTP ${status}`, detailText || err.message].filter(Boolean).join(' — ');
+}
+
+// businessId → timestamp of the last failover alert email, so a dead agent during a
+// busy morning sends one email per half hour rather than one per call.
+const lastFailoverAlert = new Map();
+const FAILOVER_ALERT_INTERVAL_MS = 30 * 60 * 1000;
+
+// ElevenLabs is unreachable for this call. Without this the stream just closes and
+// Twilio hangs up on the caller — which went unnoticed for seven weeks in Aug–Sep 2026
+// when HDG's key stopped working. Instead: put the caller through to a human, write
+// the real error to the interaction log, and email an alert.
+async function failOverCall(business, callSid, callerId, reason) {
+  const businessId = business.config.id;
+  const failoverNumber = business.config.failoverNumber;
+  logInteraction(`[ERROR] ElevenLabs unavailable (${businessId}) for ${callerId || 'unknown caller'}: ${reason}`);
+
+  let redirected = false;
+  let outcome;
+  if (!callSid) {
+    outcome = 'Not redirected — no CallSid on the stream.';
+  } else if (!failoverNumber) {
+    outcome = 'Not redirected — no failoverNumber in config.json. The caller was hung up on.';
+  } else {
+    try {
+      await transferCall(callSid, failoverNumber);
+      redirected = true;
+      outcome = `Caller redirected to ${failoverNumber}.`;
+    } catch (err) {
+      outcome = `Redirect to ${failoverNumber} FAILED: ${err.message}`;
+    }
+  }
+  logInteraction(`[Failover:${businessId}] ${outcome}`);
+
+  const last = lastFailoverAlert.get(businessId) || 0;
+  if (Date.now() - last < FAILOVER_ALERT_INTERVAL_MS) return redirected;
+  lastFailoverAlert.set(businessId, Date.now());
+  sendEmail({
+    to: business.config.fallbackEmail || globalFallbackEmail,
+    subject: `[${business.config.displayName}] AI receptionist DOWN — ElevenLabs unavailable`,
+    body: [
+      `The AI receptionist could not connect to ElevenLabs for an incoming call.`,
+      '',
+      `Error: ${reason}`,
+      `Caller: ${callerId || 'unknown'}`,
+      `Call SID: ${callSid || 'unknown'}`,
+      `Outcome: ${outcome}`,
+      '',
+      `Likely causes: ElevenLabs API key revoked/rotated (Azure setting ELEVENLABS_API_KEY),`,
+      `agent ${business.config.elevenLabsAgentId} deleted, or an ElevenLabs outage.`,
+      '',
+      `Further failures are logged but not emailed for the next 30 minutes.`
+    ].join('\n')
+  }).catch(e => console.error(`[Failover:${businessId}] Alert email failed:`, e.message));
+  return redirected;
+}
+
 // WebSocket connection handler.
 // IMPORTANT: Azure App Service's ARR proxy strips query parameters from WebSocket upgrade
 // URLs, so we cannot rely on ?business=hdg from the URL alone. Instead, business_id is
@@ -1193,6 +1257,19 @@ wss.on('connection', (twilioWs, req) => {
   let audioQueue = [];
   let callStartTime = null;
   let wsCallSid = null;
+  let conversationStarted = false;
+  let failedOver = false;
+  let twilioStopped = false;
+
+  // Once per stream. Leaves twilioWs open when the redirect succeeds — closing the
+  // stream first would end <Connect>, and Twilio would hang up before the redirect lands.
+  async function failOver(customParameters, reason) {
+    if (failedOver || twilioStopped) return;
+    failedOver = true;
+    console.error(`[WS:${businessId}] ElevenLabs unavailable: ${reason}`);
+    const redirected = await failOverCall(business, wsCallSid, customParameters.caller_id, reason);
+    if (!redirected) twilioWs.close();
+  }
 
   async function connectToElevenLabs(customParameters) {
     try {
@@ -1276,6 +1353,7 @@ wss.on('connection', (twilioWs, req) => {
             case 'conversation_initiation_metadata': {
               // Record the conversation id against the CallSid. A ring-reclaim call
               // produces one id per leg; sendTranscriptEmail stitches them together.
+              conversationStarted = true;
               const convId = msg.conversation_initiation_metadata_event?.conversation_id;
               console.log(`[WS:${businessId}] ElevenLabs conversation initiated${convId ? ` (${convId})` : ''}`);
               if (convId && wsCallSid) {
@@ -1310,12 +1388,23 @@ wss.on('connection', (twilioWs, req) => {
         }
       });
 
-      elevenLabsWs.on('error', err => console.error(`[WS:${businessId}] ElevenLabs error:`, err.message));
-      elevenLabsWs.on('close', () => console.log(`[WS:${businessId}] ElevenLabs disconnected`));
+      let lastElevenLabsError = null;
+      elevenLabsWs.on('error', err => {
+        lastElevenLabsError = err.message;
+        console.error(`[WS:${businessId}] ElevenLabs error:`, err.message);
+      });
+      elevenLabsWs.on('close', (code, reasonBuf) => {
+        console.log(`[WS:${businessId}] ElevenLabs disconnected (${code})`);
+        // Got a signed URL but the agent never started (rejected handshake, deleted
+        // agent, bad override) — same dead air for the caller as a failed key.
+        if (!conversationStarted) {
+          const reason = String(reasonBuf || '') || lastElevenLabsError || 'no reason given';
+          failOver(customParameters, `WebSocket closed before conversation started (code ${code}: ${reason})`);
+        }
+      });
 
     } catch (err) {
-      console.error(`[WS:${businessId}] Failed to connect to ElevenLabs:`, err.message);
-      twilioWs.close();
+      failOver(customParameters, `Could not get signed URL: ${describeElevenLabsError(err)}`);
     }
   }
 
@@ -1355,7 +1444,11 @@ wss.on('connection', (twilioWs, req) => {
           break;
         case 'stop':
           console.log(`[WS:${businessId}] Twilio stream stopped`);
+          twilioStopped = true;
           if (elevenLabsWs) elevenLabsWs.close();
+          // No conversation happened; the transcript lookup would fall back to
+          // "most recent conversation" and email some other caller's transcript.
+          if (failedOver) break;
           // A ring-reclaim dial is in flight: this 'stop' is Twilio pulling the call
           // off the stream to ring the callee, not the call ending. Sending the
           // transcript now would set the dedup flag and swallow the message leg.
@@ -1381,11 +1474,13 @@ wss.on('connection', (twilioWs, req) => {
 
   twilioWs.on('close', () => {
     console.log(`[WS:${businessId}] Twilio disconnected`);
+    twilioStopped = true; // caller hung up early — not an ElevenLabs failure
     if (elevenLabsWs) elevenLabsWs.close();
   });
 
   twilioWs.on('error', err => {
     console.error(`[WS:${businessId}] Twilio error:`, err.message);
+    twilioStopped = true;
     if (elevenLabsWs) elevenLabsWs.close();
   });
 });

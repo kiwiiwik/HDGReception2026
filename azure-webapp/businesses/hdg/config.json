@@ -12,5 +12,6 @@
     "days": [1, 2, 3, 4, 5]
   },
   "emailRecipients": ["rod.grant@hdg.co.nz"],
-  "fallbackEmail": "rod.grant@i6.co.nz"
+  "fallbackEmail": "rod.grant@i6.co.nz",
+  "failoverNumber": "+6421747268"
 }

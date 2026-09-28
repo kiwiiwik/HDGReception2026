@@ -69,6 +69,10 @@ Optional fields:
   bridge always overrides it, so set the wording here.
 - `greetingKnown` — opening line for recognised callers; `{firstName}` is substituted.
 - `transferMode` / `ringTimeout` — see Transfer Modes below.
+- `failoverNumber` — E.164 number the call is redirected to if ElevenLabs can't be reached
+  (signed-URL failure or agent closes before the conversation starts). The error is written
+  to the daily interaction log and an alert is emailed to `fallbackEmail` (max once per 30 min).
+  Without it the caller is hung up on. Must not divert back to the Twilio number (loop).
 
 Note the same applies to the dashboard **System prompt**: it is a fallback for when
 overrides fail. Editing it has no effect on live calls — edit the `prompt-*.md` files.

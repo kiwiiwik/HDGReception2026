@@ -285,7 +285,18 @@ function buildReclaimFirstMessage(business, attemptedCallee, firstName) {
 }
 
 function resolveCallee(business, Callee_Name) {
-  const calleeInfo = business.calleeDirectory[Callee_Name.toLowerCase()];
+  let calleeInfo = business.calleeDirectory[Callee_Name.toLowerCase()];
+  if (!calleeInfo) {
+    // Speech recognition often misspells first names ("Carl" for Karl). Fall back
+    // to the surname, but only when exactly one staff member has it.
+    const surname = Callee_Name.trim().split(/\s+/).pop().toLowerCase();
+    const matches = Object.values(business.calleeDirectory)
+      .filter(e => e.name.replace(/\s*\(.*\)$/, '').split(/\s+/).pop().toLowerCase() === surname);
+    if (matches.length === 1) {
+      calleeInfo = matches[0];
+      console.log(`[Webhook] Callee "${Callee_Name}" matched by surname to "${calleeInfo.name}"`);
+    }
+  }
   if (!calleeInfo) {
     console.warn(`[Webhook] Callee not found: "${Callee_Name}" — using fallback email`);
   }

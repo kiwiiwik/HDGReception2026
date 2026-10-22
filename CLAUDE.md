@@ -129,6 +129,29 @@ Three things this mode has to get right, all handled in `index.js`:
 3. **No premature success email** — in ring-reclaim mode `/transfer-call` skips the call
    summary (the outcome isn't known while it's still ringing); `/dial-result` sends it.
 
+## Purchase Orders (HDG — POC)
+Staff ring Lauren and say "I need a purchase order". She asks what, how much, which supplier,
+which job, then calls the `SubmitPurchaseOrder` tool → `POST /purchase-order/hdg`. All logic is
+in `azure-webapp/purchase-orders.js`; config is `purchaseOrders` in `hdg/config.json`.
+
+- **Requester** = caller ID matched against `callee_list.txt` phones. Not staff → refused.
+- **Job** validated against `hdg/jobs.csv` (`Job,Description,Foreman,Manager`); the list is also
+  appended to Lauren's prompt so she can match "the Westfield job". Reload: `/reload-directory/hdg`.
+- **Tiers** (ordered, first `under` that exceeds the amount wins): <$50 self-approved on the call,
+  <$100 foreman, <$500 manager (both from jobs.csv), else `directorEmail`.
+- **Approval** — approver emailed `/po/review/hdg/{REQ}?t=HMAC`. GET only shows the request;
+  Approve/Reject is a POST, because mail scanners (Safe Links) prefetch every link.
+  Secret: `PO_LINK_SECRET` env, else auto-generated in `/home/data/hdg/po-link-secret`.
+- **On approval** — sequential PO number (`GR-1001`…), SMS to requester (MessageMedia = Sinch
+  Engage; Twilio can't send NZ SMS), summary email to `accountsEmail`.
+- **Register** — `/home/data/hdg/po-register.json` is the source of truth (numbering is safe
+  because the app is single-instance and writes are synchronous). Optional SharePoint mirror:
+  `purchaseOrders.sharePoint = { site, list }` + `GRAPH_TENANT_ID/CLIENT_ID/CLIENT_SECRET`;
+  create the list with `scripts/create-po-sharepoint-list.js`.
+- Requester also gets an outcome email (to their staff-list address, or `testRequesterEmail` —
+  POC only, currently worker@totalrail.co.nz; the test aliases all land in rod.grant@hdg.co.nz).
+- Tool attached to the agent with `scripts/add-po-tool-hdg.js --create` (dry run without flag).
+
 ## How Prompt Selection Works (server-side)
 At call time, Node.js checks:
 1. Is the current NZ time within the business's configured office hours? (incl. public holidays)

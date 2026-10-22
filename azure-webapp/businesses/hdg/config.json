@@ -13,5 +13,23 @@
   },
   "emailRecipients": ["rod.grant@hdg.co.nz"],
   "fallbackEmail": "rod.grant@i6.co.nz",
-  "failoverNumber": "+6421747268"
+  "failoverNumber": "+6421747268",
+  "purchaseOrders": {
+    "poPrefix": "GR-",
+    "firstPoNumber": 1001,
+    "smsSignature": "Gibbons Rail",
+    "_tiers_note": "Ordered. First tier whose 'under' exceeds the amount wins; the last tier catches the rest. foreman/manager come from jobs.csv, director from directorEmail.",
+    "tiers": [
+      { "under": 50,  "approver": "self",     "label": "Self-approved (under $50)" },
+      { "under": 100, "approver": "foreman",  "label": "Foreman" },
+      { "under": 500, "approver": "manager",  "label": "Project Manager" },
+      {               "approver": "director", "label": "Director" }
+    ],
+    "directorEmail": "director@totalrail.co.nz",
+    "accountsEmail": "accountant@totalrail.co.nz",
+    "defaultApproverEmail": "approver@totalrail.co.nz",
+    "_testRequesterEmail_note": "POC only: sends every requester's outcome email here instead of their staff-list address. Remove for live.",
+    "testRequesterEmail": "worker@totalrail.co.nz",
+    "sharePoint": null
+  }
 }

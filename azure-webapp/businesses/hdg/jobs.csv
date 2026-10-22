@@ -1,0 +1,6 @@
+Job,Description,Foreman,Manager
+# POC sample jobs — replace with the real list. Foreman/Manager are approver emails.
+# After editing on Azure, POST /reload-directory/hdg (or redeploy).
+GR2401,Westfield siding renewal,foreman@totalrail.co.nz,approver@totalrail.co.nz
+GR2402,Penrose yard track maintenance,foreman@totalrail.co.nz,approver@totalrail.co.nz
+GR2403,Wiri level crossing upgrade,foreman@totalrail.co.nz,approver@totalrail.co.nz

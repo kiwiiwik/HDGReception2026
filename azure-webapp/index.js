@@ -201,13 +201,37 @@ function loadBusiness(businessId) {
     // knowledge.md is optional — no warning needed
   }
 
+  // Optional job list (purchase-order businesses). Appended to the prompt so the agent
+  // can resolve "the Westfield job" to a number; /purchase-order validates against it.
+  const jobs = loadJobList(path.join(dir, 'jobs.csv'));
+  if (jobs.length) {
+    const jobLines = jobs.map(j => `- ${j.job}: ${j.description}`).join('\n');
+    knowledge += `${knowledge ? '\n\n' : ''}# Job List\n\nThe only valid job numbers:\n\n${jobLines}`;
+  }
+
   const validPhoneNumbers = new Set(
     Object.values(calleeDirectory).map(e => e.phone).filter(Boolean)
   );
   // The failover number is dialled via /transfer too, which only accepts known numbers
   if (config.failoverNumber) validPhoneNumbers.add(config.failoverNumber);
 
-  return { config, calleeDirectory, knownCallers, knownCallersPath, prompts, knowledge, validPhoneNumbers };
+  return {
+    config, calleeDirectory, knownCallers, knownCallersPath, prompts, knowledge, validPhoneNumbers, jobs,
+    dataDir: path.dirname(knownCallersPath)
+  };
+}
+
+// jobs.csv: Job,Description,Foreman,Manager — header row, emails for the approvers
+function loadJobList(jobsPath) {
+  if (!fs.existsSync(jobsPath)) return [];
+  return fs.readFileSync(jobsPath, 'utf-8').split('\n')
+    .map(l => l.trim())
+    .filter(l => l && !l.startsWith('#'))
+    .map(l => {
+      const [job, description, foreman, manager] = l.split(',').map(x => x.trim());
+      return { job, description, foreman, manager };
+    })
+    .filter(j => j.job && j.job.toLowerCase() !== 'job');
 }
 
 function loadAllBusinesses() {
@@ -306,6 +330,18 @@ function resolveCallee(business, Callee_Name) {
     calleeRole: calleeInfo?.role || 'Unknown',
     found: !!calleeInfo
   };
+}
+
+// Compare on digits in +64 form, so "+64 27 563 8123" and "0275638123" both match
+function normalisePhone(phone) {
+  const digits = String(phone || '').replace(/\D/g, '');
+  return digits.startsWith('0') ? `64${digits.slice(1)}` : digits;
+}
+
+function findStaffByPhone(business, phone) {
+  const target = normalisePhone(phone);
+  if (!target) return null;
+  return Object.values(business.calleeDirectory).find(e => e.phone && normalisePhone(e.phone) === target) || null;
 }
 
 function saveKnownCaller(business, phone, name) {
@@ -774,6 +810,11 @@ app.post('/send-text',     handleSendText);
 // Legacy /send-email alias — kept for backward compatibility
 app.post('/send-email/:businessId', handleSendMessage);
 app.post('/send-email',             handleSendMessage);
+
+// Purchase-order workflow: /purchase-order/:businessId (agent tool) + /po/* (approval pages)
+require('./purchase-orders')(app, {
+  getBusiness, findStaffByPhone, fillFromBridge, sendEmail, sendSms, logInteraction
+});
 
 // Twilio TwiML endpoint: validates transfer number against all business staff directories
 // Called by Twilio during an active transfer (URL set in TRANSFER_URL_BASE env var)

@@ -140,8 +140,9 @@ logic is in `azure-webapp/purchase-orders.js`; config is `purchaseOrders` in `hd
   (`Job,Description,Supervisor,ProjectManager,Director`). Reload: `/reload-directory/hdg`.
 - **Roles are per job.** Each role cell holds staff names (resolved via the staff list) or emails,
   `;` between several people (all emailed, first to decide wins). Blank → `defaultApprovers`.
-- **Cascade** (`approvalLevels`): under `selfApproveUnder` ($50) the PO is issued on the call.
-  Otherwise the request climbs Site Supervisor → Project Manager → Director, stopping at the first
+- **Cascade** (`approvalLevels`): every PO needs at least the first level — no self-approval (Karl's
+  call; `selfApproveUnder` would re-enable issuing on the call, but is unset). The request climbs
+  Site Supervisor → Project Manager → Director, stopping at the first
   level whose `upTo` exceeds the amount ($100 / $500 / none). The next level is only emailed once
   the one below approves. Any rejection ends it. The requester is never their own approver: their
   level is skipped, and if it was the top one the next level up takes its place.

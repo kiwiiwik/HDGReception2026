@@ -19,7 +19,7 @@
     "firstPoNumber": 1001,
     "smsSignature": "Gibbons Rail",
     "companyName": "Gibbons Rail",
-    "selfApproveUnder": 50,
+    "_selfApprove_note": "No self-approval (Karl, 2026-10-24): every PO needs at least the first approver. Setting selfApproveUnder (e.g. 50) would issue POs under that amount on the call.",
     "_approvalLevels_note": "Cascade, lowest first. A request climbs the levels in turn and stops at the first whose 'upTo' is above the amount; the last level has no limit. 'role' is the jobs.csv column (header with a lower-case first letter) holding who approves at that level on each job.",
     "approvalLevels": [
       { "role": "supervisor",     "label": "Site Supervisor", "upTo": 100 },

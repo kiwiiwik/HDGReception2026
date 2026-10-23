@@ -14,6 +14,7 @@ Jay Nair,jay.nair@gibbonsrail.co.nz,+64225554172,Project Engineer
 Jesse Paul,Jesse.Paul@totalrailsolutions.co.nz,+6421864802,Project Engineer
 John Kauvai,john.kauvai@totalrailsolutions.co.nz,+64274940012,General Superintendent
 Jomer Costales,jomer.costales@gibbonsrail.co.nz,+64223946424,Leading Hand
+Josh Grant,Josh@grantbuilt.co.nz,+6421522500,External (PO trial)
 Karl Donovan,karl.donovan@gibbonsrail.co.nz,+64278389500,Director
 Mika Saolotoga,mika.saolotoga@hdg.co.nz,+64226392657,Leading Hand
 Mike Harris,mike.harris@hdg.co.nz,+64274973352,Director

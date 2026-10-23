@@ -88,6 +88,12 @@ module.exports = function registerPurchaseOrders(app, deps) {
   const escHtml = s => String(s == null ? '' : s)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
+  // The LLM fills unknown fields with "None", "null", "N/A" etc. rather than leaving them empty
+  function blankIfPlaceholder(value) {
+    const s = String(value == null ? '' : value).trim();
+    return /^(none|null|undefined|n\/?a|unknown|not specified|tbc|-)?$/i.test(s) ? '' : s;
+  }
+
   // "$1,250.50", "about 85 bucks", "85" → number. Speech-to-text gives us all sorts.
   function parseAmount(value) {
     const m = String(value || '').replace(/,/g, '').match(/\d+(\.\d+)?/);
@@ -332,18 +338,33 @@ module.exports = function registerPurchaseOrders(app, deps) {
         return reply('not_staff', 'This phone number is not registered to a staff member, so a purchase order cannot be raised from it. Apologise, ask them to call back from their work mobile or contact the office, then end the call.');
       }
 
+      // Flash Lite fires this tool the moment a caller says "I need a purchase order",
+      // with empty fields, "None" placeholders, or "purchase order" as the description.
+      // Answer with everything still missing, in the order the prompt asks for it, so
+      // the agent asks the next question instead of reporting a job "not found".
+      Supplier = blankIfPlaceholder(Supplier);
+      Description = blankIfPlaceholder(Description);
+      if (/^(a\s+)?(purchase\s+order|po)$/i.test(Description)) Description = '';
+      Job_Number = blankIfPlaceholder(Job_Number);
+      Amount = blankIfPlaceholder(Amount);
+      const missing = [
+        !Description && ['what they need', 'What do you need?'],
+        !(parseAmount(Amount) > 0) && ['the cost', 'How much will it cost?'],
+        !Supplier && ['the supplier', 'Where will you buy it from?'],
+        !Job_Number && ['the job', 'What job is it for?']
+      ].filter(Boolean);
+      if (missing.length) {
+        return reply('missing_details',
+          `Nothing has been submitted yet. Still needed: ${missing.map(m => m[0]).join(', ')}. ` +
+          `Ask the caller "${missing[0][1]}" and then the remaining questions one at a time. ` +
+          `Do not mention errors or anything being "not found". Call this tool again only when you have all four and the caller has confirmed.`);
+      }
+
       const job = findJob(business, Job_Number);
       if (!job) {
         return reply('job_not_found', `Job "${Job_Number}" is not on the job list. Read the number back to the caller and ask them to check it. Only call this tool again once they give a different job number.`);
       }
-
       const amount = parseAmount(Amount);
-      if (!(amount > 0)) {
-        return reply('invalid_amount', `"${Amount}" is not a usable amount. Ask the caller roughly how much it will cost, in dollars.`);
-      }
-      if (!Supplier || !Description) {
-        return reply('missing_details', 'Ask the caller for the missing supplier or a short description of what they are buying, then call this tool again.');
-      }
 
       // The LLM sometimes fires a tool twice; the same request on the same call is one PO
       let register = loadRegister(business);

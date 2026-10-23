@@ -344,8 +344,15 @@ function findStaffByPhone(business, phone) {
   return Object.values(business.calleeDirectory).find(e => e.phone && normalisePhone(e.phone) === target) || null;
 }
 
+// Staff are named from the staff directory, never from known_callers: speech recognition
+// spells names the way they sound, and Karl Donovan was saved — and greeted — as "Carl".
+function knownCallerName(business, phone) {
+  return findStaffByPhone(business, phone)?.name || business.knownCallers[phone];
+}
+
 function saveKnownCaller(business, phone, name) {
   if (!phone || !name) return;
+  if (findStaffByPhone(business, phone)) return; // the directory already has the right spelling
   const normalPhone = phone.trim();
   const normalName = name.trim();
   if (!normalPhone || !normalName) return;
@@ -365,8 +372,8 @@ const transporter = nodemailer.createTransport({
   auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
 });
 
-async function sendEmail({ to, subject, body }) {
-  await transporter.sendMail({ from: EMAIL_FROM, to, subject, text: body });
+async function sendEmail({ to, subject, body, attachments }) {
+  await transporter.sendMail({ from: EMAIL_FROM, to, subject, text: body, attachments });
 }
 
 async function sendSms({ to, body }) {
@@ -475,7 +482,7 @@ function handleIncomingCall(req, res) {
 
   const callerNumber = req.body.From || req.body.Caller || '';
   const callSid = req.body.CallSid || '';
-  const knownName = business.knownCallers[callerNumber];
+  const knownName = knownCallerName(business, callerNumber);
 
   console.log(`[Incoming:${businessId}] From ${callerNumber}${knownName ? ` (${knownName})` : ' (unknown)'}, SID: ${callSid}`);
   logInteraction(`Incoming call (${businessId}) from ${callerNumber}${knownName ? ` (${knownName})` : ' (unknown)'}`);
@@ -913,7 +920,8 @@ app.post('/dial-result/:businessId', async (req, res) => {
 
   // No answer / busy / failed — hand the caller back to the agent to take a message.
   const callerNumber = callData.caller_phone || req.body.From || '';
-  let knownName = callData.caller_name || business.knownCallers[callerNumber] || '';
+  let knownName = findStaffByPhone(business, callerNumber)?.name
+    || callData.caller_name || business.knownCallers[callerNumber] || '';
   if (isPlaceholderName(knownName)) knownName = '';
 
   console.log(`[DialResult:${businessId}] Reclaiming call ${callSid} for ${knownName || 'unknown caller'}`);

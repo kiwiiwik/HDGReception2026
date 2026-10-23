@@ -17,6 +17,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const axios = require('axios');
+const PDFDocument = require('pdfkit');
 
 module.exports = function registerPurchaseOrders(app, deps) {
   const { getBusiness, findStaffByPhone, fillFromBridge, sendEmail, sendSms, logInteraction } = deps;
@@ -194,13 +195,23 @@ module.exports = function registerPurchaseOrders(app, deps) {
     const name = po.smsSignature || business.config.displayName;
     textRequester(business, rec,
       `${name}: PO ${rec.poNumber} APPROVED. ${rec.supplier}, ${money(rec.amount)}, job ${rec.job}. Quote ${rec.poNumber} at the counter and make sure it's on the docket.`);
-    emailRequester(business, rec, `PO ${rec.poNumber} approved — ${rec.supplier} ${money(rec.amount)} (job ${rec.job})`, [
+    const approvedBody = [
       `Your purchase order is approved. Quote ${rec.poNumber} at the counter and make sure it's on the docket.`,
+      `The purchase order is attached as a PDF if the supplier wants a copy.`,
       '',
       describe(rec),
       '',
       `Approved by: ${rec.decidedBy}, ${nzTime(rec.decidedAt)}`
-    ].join('\n'));
+    ].join('\n');
+    const subject = `PO ${rec.poNumber} approved — ${rec.supplier} ${money(rec.amount)} (job ${rec.job})`;
+    buildPoPdf(business, rec)
+      .then(pdf => emailRequester(business, rec, subject, approvedBody,
+        [{ filename: `${rec.poNumber}.pdf`, content: pdf, contentType: 'application/pdf' }]))
+      .catch(e => {
+        // Never lose the approval email over a PDF problem — send it without one
+        logInteraction(`[ERROR] PO PDF failed (${rec.poNumber}): ${e.message}`);
+        emailRequester(business, rec, subject, approvedBody.replace(/\nThe purchase order is attached[^\n]*/, ''));
+      });
 
     sendEmail({
       to: po.accountsEmail || po.defaultApproverEmail,
@@ -237,11 +248,73 @@ module.exports = function registerPurchaseOrders(app, deps) {
 
   // Copy of the outcome by email, alongside the SMS. testRequesterEmail (POC) redirects
   // every requester's copy to one test inbox without editing the staff list.
-  function emailRequester(business, rec, subject, body) {
+  function emailRequester(business, rec, subject, body, attachments) {
     const to = business.config.purchaseOrders.testRequesterEmail || rec.requesterEmail;
     if (!to) return;
-    sendEmail({ to, subject, body })
+    sendEmail({ to, subject, body, attachments })
       .catch(e => logInteraction(`[ERROR] PO requester email failed (${rec.id} → ${to}): ${e.message}`));
+  }
+
+  // ── PDF purchase order ─────────────────────────────────────────────────────
+  // A one-page A4 PO the requester can show or forward to the supplier. Resolves to a Buffer.
+  function buildPoPdf(business, rec) {
+    return new Promise((resolve, reject) => {
+      const po = business.config.purchaseOrders;
+      const doc = new PDFDocument({ size: 'A4', margin: 50, info: { Title: `Purchase Order ${rec.poNumber}` } });
+      const chunks = [];
+      doc.on('data', c => chunks.push(c));
+      doc.on('end', () => resolve(Buffer.concat(chunks)));
+      doc.on('error', reject);
+
+      const left = 50, width = doc.page.width - 100;
+      const issued = new Date(rec.decidedAt).toLocaleDateString('en-NZ', { timeZone: 'Pacific/Auckland', day: 'numeric', month: 'long', year: 'numeric' });
+
+      // Header: company on the left, PO number on the right
+      doc.font('Helvetica-Bold').fontSize(20).fillColor('#1d2330')
+        .text(po.companyName || business.config.displayName, left, 50, { width: width * 0.6 });
+      doc.font('Helvetica').fontSize(9).fillColor('#5c6475')
+        .text(business.config.address || '', { width: width * 0.6 })
+        .text(business.config.officePhone ? `Phone ${business.config.officePhone}` : '', { width: width * 0.6 });
+      doc.font('Helvetica-Bold').fontSize(11).fillColor('#5c6475')
+        .text('PURCHASE ORDER', left, 52, { width, align: 'right' });
+      doc.fontSize(22).fillColor('#1d2330').text(rec.poNumber, { width, align: 'right' });
+      doc.font('Helvetica').fontSize(9).fillColor('#5c6475').text(`Issued ${issued}`, { width, align: 'right' });
+
+      let y = 140;
+      doc.moveTo(left, y).lineTo(left + width, y).strokeColor('#d0d4dc').stroke();
+      y += 16;
+
+      if (rec.retrospective) {
+        doc.rect(left, y, width, 24).fill('#fff3cd');
+        doc.font('Helvetica-Bold').fontSize(10).fillColor('#7a5b00')
+          .text(`RETROSPECTIVE — goods already purchased${rec.purchaseDate ? ` (${rec.purchaseDate})` : ''}`, left + 10, y + 7, { width: width - 20 });
+        y += 38;
+      }
+
+      const rows = [
+        ['Supplier', rec.supplier],
+        ['Job', `${rec.job} — ${rec.jobDescription}`],
+        ['Description', rec.description],
+        ['Amount (estimate)', `${money(rec.amount)} NZD`],
+        ['Requested by', `${rec.requester}, ${nzTime(rec.requestedAt)}`],
+        ['Approved by', `${rec.decidedBy}, ${nzTime(rec.decidedAt)}`],
+        ['Approval level', rec.tierLabel]
+      ];
+      for (const [label, value] of rows) {
+        doc.font('Helvetica').fontSize(10).fillColor('#5c6475').text(label, left, y, { width: 130 });
+        doc.font('Helvetica-Bold').fontSize(11).fillColor('#1d2330').text(value, left + 140, y, { width: width - 140 });
+        y = Math.max(doc.y, y + 14) + 10;
+      }
+
+      y += 10;
+      doc.moveTo(left, y).lineTo(left + width, y).strokeColor('#d0d4dc').stroke();
+      doc.font('Helvetica-Bold').fontSize(11).fillColor('#1d2330')
+        .text(`Supplier: please quote ${rec.poNumber} on your docket and invoice.`, left, y + 16, { width });
+      doc.font('Helvetica').fontSize(9).fillColor('#5c6475')
+        .text(`Invoices without a purchase order number may be delayed. Request reference ${rec.id}.`, { width });
+
+      doc.end();
+    });
   }
 
   // ── SharePoint mirror ──────────────────────────────────────────────────────

@@ -18,6 +18,7 @@
     "poPrefix": "GR-",
     "firstPoNumber": 1001,
     "smsSignature": "Gibbons Rail",
+    "companyName": "Gibbons Rail",
     "_tiers_note": "Ordered. First tier whose 'under' exceeds the amount wins; the last tier catches the rest. foreman/manager come from jobs.csv, director from directorEmail.",
     "tiers": [
       { "under": 50,  "approver": "self",     "label": "Self-approved (under $50)" },

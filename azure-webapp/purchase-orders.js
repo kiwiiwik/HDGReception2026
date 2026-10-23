@@ -106,6 +106,13 @@ module.exports = function registerPurchaseOrders(app, deps) {
     return /^(none|null|undefined|n\/?a|unknown|not specified|tbc|-)?$/i.test(s) ? '' : s;
   }
 
+  // "a purchase order", "PO number", and how speech recognition hears "PO": "PEO",
+  // "pee oh", "P.O.", "picture order". None of these is the thing being bought.
+  function isPurchaseOrderWords(value) {
+    const letters = String(value || '').toLowerCase().replace(/[^a-z]/g, '');
+    return /^(an?|the|my)?(purchase|picture|pitcher)?(order|tour)?(p|pe|pee|pea)?(o|oh|eo|io)?(number|no)?$/.test(letters);
+  }
+
   // "$1,250.50", "about 85 bucks", "85" → number. Speech-to-text gives us all sorts.
   function parseAmount(value) {
     const m = String(value || '').replace(/,/g, '').match(/\d+(\.\d+)?/);
@@ -519,6 +526,12 @@ module.exports = function registerPurchaseOrders(app, deps) {
   }
 
   // ── Agent webhook ──────────────────────────────────────────────────────────
+  // call → details awaiting the caller's yes (see the read-back gate below)
+  const awaitingConfirm = new Map();
+  setInterval(() => {
+    for (const [k, v] of awaitingConfirm) if (Date.now() - v.at > 60 * 60 * 1000) awaitingConfirm.delete(k);
+  }, 30 * 60 * 1000).unref();
+
   // Always 200 with a "message" the agent acts on — a 4xx just makes the LLM say
   // "something went wrong" instead of asking the caller to fix the job number.
   app.post('/purchase-order/:businessId', async (req, res) => {
@@ -546,7 +559,7 @@ module.exports = function registerPurchaseOrders(app, deps) {
       // the agent asks the next question instead of reporting a job "not found".
       Supplier = blankIfPlaceholder(Supplier);
       Description = blankIfPlaceholder(Description);
-      if (/^(an?\s+)?(purchase\s+order|p\.?\s?o\.?)(\s+number)?$/i.test(Description)) Description = '';
+      if (isPurchaseOrderWords(Description)) Description = '';
       Job_Number = blankIfPlaceholder(Job_Number);
       Amount = blankIfPlaceholder(Amount);
       const missing = [
@@ -578,6 +591,26 @@ module.exports = function registerPurchaseOrders(app, deps) {
           ? `Already approved as ${dup.poNumber}. Do not submit again.`
           : 'Already submitted for approval. Do not submit again.', { po_number: dup.poNumber || '' });
       }
+
+      // Read-back gate. The prompt says to confirm before submitting, but the agent
+      // skips it — and on 2026-10-24 submitted "PEO" (a misheard "PO") as the item.
+      // So the first complete call only returns the sentence to read back; the same
+      // details sent again (after the caller says yes) are what actually submit.
+      // Keyed loosely: the agent rewords between calls ("Stephenson's" / "Stephensons",
+      // "a plate compactor" / "plate compactor"), and a strict key would loop the read-back.
+      // A corrected description alone submits without a second read-back.
+      const confirmKey = [job.job, amount, String(Supplier).toLowerCase().replace(/[^a-z0-9]/g, '')].join('|');
+      const callKey = call_sid || caller_id;
+      if (awaitingConfirm.get(callKey)?.key !== confirmKey) {
+        awaitingConfirm.set(callKey, { key: confirmKey, at: Date.now() });
+        const spokenAmount = Number.isInteger(amount) ? `$${amount}` : money(amount);
+        return reply('confirm',
+          `Nothing has been submitted yet. Read this back to the caller and ask if it's right: ` +
+          `"So that's about ${spokenAmount} at ${Supplier} for ${Description}, on the ${job.description} job. Is that right?" ` +
+          `If they say yes, call this tool again with exactly the same details to submit it. ` +
+          `If anything is wrong, get the correct detail and call again with the corrected details.`);
+      }
+      awaitingConfirm.delete(callKey);
 
       const chain = buildChain(business, amount, job, staff);
       const rec = {

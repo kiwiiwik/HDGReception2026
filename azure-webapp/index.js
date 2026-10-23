@@ -221,17 +221,19 @@ function loadBusiness(businessId) {
   };
 }
 
-// jobs.csv: Job,Description,Foreman,Manager — header row, emails for the approvers
+// jobs.csv: header row, then one job per line. Columns are named by the header, so role
+// columns (Supervisor, ProjectManager, Director) can be added without code changes —
+// each becomes a property keyed by its header with a lower-case first letter.
 function loadJobList(jobsPath) {
   if (!fs.existsSync(jobsPath)) return [];
-  return fs.readFileSync(jobsPath, 'utf-8').split('\n')
+  const lines = fs.readFileSync(jobsPath, 'utf-8').split('\n')
     .map(l => l.trim())
-    .filter(l => l && !l.startsWith('#'))
-    .map(l => {
-      const [job, description, foreman, manager] = l.split(',').map(x => x.trim());
-      return { job, description, foreman, manager };
-    })
-    .filter(j => j.job && j.job.toLowerCase() !== 'job');
+    .filter(l => l && !l.startsWith('#'));
+  if (!lines.length) return [];
+  const keys = lines[0].split(',').map(h => h.trim()).map(h => h.charAt(0).toLowerCase() + h.slice(1));
+  return lines.slice(1)
+    .map(l => Object.fromEntries(l.split(',').map((v, i) => [keys[i], v.trim()])))
+    .filter(j => j.job);
 }
 
 function loadAllBusinesses() {

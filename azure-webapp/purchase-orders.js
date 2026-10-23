@@ -2,16 +2,19 @@
 //
 //   Staff ring the receptionist and ask for a PO → agent collects what / cost / supplier / job
 //     → POST /purchase-order/:businessId        (ElevenLabs webhook tool)
-//         validates requester (caller ID) and job, picks the approval tier by amount
-//         ├── self-approve tier → PO number issued straight away, read back on the call
-//         └── otherwise → approver emailed a review link
-//               → GET  /po/review/:businessId/:requestId?t=…   (confirmation page)
-//               → POST /po/decide/:businessId/:requestId       (Approve / Reject)
-//   On approval: sequential PO number, SMS to requester (Sinch / MessageMedia),
-//   summary email to accounts, register updated (JSON file, mirrored to SharePoint).
+//         validates requester (caller ID) and job, builds the approval cascade by amount
+//         ├── under selfApproveUnder → PO number issued straight away, read back on the call
+//         └── otherwise → Site Supervisor → Project Manager → Director, stopping at the
+//             first level whose limit covers the amount. Each level is emailed a review
+//             link only once the level below has approved:
+//               → GET  /po/review/:businessId/:requestId?s=step&a=approver&t=…  (page)
+//               → POST /po/decide/:businessId/:requestId                        (Approve / Reject)
+//   On final approval: sequential PO number, SMS to requester (Sinch / MessageMedia),
+//   PDF to requester, summary to accounts, register updated (JSON, mirrored to SharePoint).
+//   A rejection at any level ends the request.
 //
-// Config lives in the business's config.json under "purchaseOrders"; the job list in
-// jobs.csv (loaded by index.js as business.jobs).
+// Config lives in the business's config.json under "purchaseOrders". Who holds each role
+// is per job, in jobs.csv (loaded by index.js as business.jobs).
 
 const fs = require('fs');
 const path = require('path');
@@ -71,15 +74,23 @@ module.exports = function registerPurchaseOrders(app, deps) {
     }
   }
 
-  function linkToken(business, requestId) {
+  // One link per approver per step, so the register records who actually clicked
+  // (a level can have several people, e.g. either director) and a supervisor's link
+  // can't be reused to approve the director's step.
+  function linkToken(business, requestId, step, approverIndex) {
     return crypto.createHmac('sha256', linkSecret(business))
-      .update(`${business.config.id}:${requestId}`).digest('base64url');
+      .update(`${business.config.id}:${requestId}:${step}:${approverIndex}`).digest('base64url');
   }
 
-  function tokenValid(business, requestId, token) {
-    const expected = Buffer.from(linkToken(business, requestId));
+  function tokenValid(business, requestId, step, approverIndex, token) {
+    const expected = Buffer.from(linkToken(business, requestId, step, approverIndex));
     const given = Buffer.from(String(token || ''));
     return given.length === expected.length && crypto.timingSafeEqual(given, expected);
+  }
+
+  function reviewLink(business, rec, step, approverIndex) {
+    const q = new URLSearchParams({ s: step, a: approverIndex, t: linkToken(business, rec.id, step, approverIndex) });
+    return `${rec.linkBase}/po/review/${business.config.id}/${rec.id}?${q}`;
   }
 
   // ── Helpers ────────────────────────────────────────────────────────────────
@@ -103,25 +114,76 @@ module.exports = function registerPurchaseOrders(app, deps) {
 
   // Job numbers are spoken, so compare ignoring spaces, dashes and case
   const jobKey = s => String(s || '').replace(/[^a-z0-9]/gi, '').toLowerCase();
+  // Falls back to the job's name ("Benneydale", "the CRL job") when exactly one job
+  // matches — the agent is meant to convert names to numbers, but doesn't always.
   function findJob(business, jobNumber) {
-    const key = jobKey(jobNumber);
-    return key ? business.jobs.find(j => jobKey(j.job) === key) || null : null;
+    const key = jobKey(jobNumber).replace(/^the|job$/g, '');
+    if (!key) return null;
+    const byNumber = business.jobs.find(j => jobKey(j.job) === key);
+    if (byNumber || key.length < 3) return byNumber || null;
+    const byName = business.jobs.filter(j => jobKey(j.description).includes(key));
+    return byName.length === 1 ? byName[0] : null;
   }
 
-  // Tiers are ordered; the first whose "under" exceeds the amount wins. The last
-  // tier has no "under" and catches everything above.
-  function pickTier(po, amount) {
-    return po.tiers.find(t => t.under == null || amount < t.under);
-  }
-
-  function approverEmail(business, tier, job) {
+  // A jobs.csv role cell → approvers. Each ";"-separated entry is an email address or a
+  // staff name looked up in the staff list ("Karl Donovan"). Falls back to the
+  // business-wide default for that role when the cell is blank or nobody resolves.
+  function resolveApprovers(business, cell, role) {
     const po = business.config.purchaseOrders;
-    switch (tier.approver) {
-      case 'foreman':  return job.foreman || po.defaultApproverEmail;
-      case 'manager':  return job.manager || po.defaultApproverEmail;
-      case 'director': return po.directorEmail || po.defaultApproverEmail;
-      default:         return po.defaultApproverEmail;
+    const resolve = entries => entries.map(e => e.trim()).filter(Boolean).map(e => {
+      if (e.includes('@')) {
+        const staff = Object.values(business.calleeDirectory).find(s => (s.email || '').toLowerCase() === e.toLowerCase());
+        return { name: staff?.name || e, email: e };
+      }
+      const staff = business.calleeDirectory[e.toLowerCase()];
+      if (!staff?.email) logInteraction(`[PO:${business.config.id}] Approver "${e}" (${role}) is not in the staff list with an email`);
+      return staff?.email ? { name: staff.name, email: staff.email } : null;
+    }).filter(Boolean);
+    const fromJob = resolve(String(cell || '').split(';'));
+    if (fromJob.length) return fromJob;
+    return resolve(String(po.defaultApprovers?.[role] || po.defaultApproverEmail || '').split(';'));
+  }
+
+  // The cascade: climb approvalLevels in order, stopping at the first level whose
+  // "upTo" covers the amount (the last level has none and covers everything).
+  // Under selfApproveUnder there is no chain at all — the PO is issued on the call.
+  //
+  // Nobody approves their own request: a level where the requester is an approver
+  // is left out, and if that was the top level the next one up takes its place, so
+  // a project manager's $300 request goes supervisor → director, not to themselves.
+  function buildChain(business, amount, job, requester) {
+    const po = business.config.purchaseOrders;
+    if (amount < (po.selfApproveUnder || 0)) return [];
+    const levels = po.approvalLevels;
+    let top = levels.findIndex(l => l.upTo == null || amount < l.upTo);
+    if (top < 0) top = levels.length - 1;
+    const isRequester = a => a.email.toLowerCase() === (requester.email || '').toLowerCase();
+
+    const chain = [];
+    for (let i = 0; i < levels.length && i <= top; i++) {
+      const approvers = resolveApprovers(business, job[levels[i].role], levels[i].role).filter(a => !isRequester(a));
+      if (!approvers.length) {
+        // Only the requester holds this level. At the top, escalate one level further.
+        if (i === top && top < levels.length - 1) top++;
+        continue;
+      }
+      chain.push({ role: levels[i].role, label: levels[i].label, approvers, status: 'pending' });
     }
+    // A director asking for more than the others can approve, with no other director listed
+    if (!chain.length) {
+      chain.push({ role: 'default', label: 'Approver', status: 'pending',
+        approvers: [{ name: po.defaultApproverEmail, email: po.defaultApproverEmail }] });
+    }
+    return chain;
+  }
+
+  const firstNames = list => list.map(a => a.name).join(' or ');
+
+  // "Site Supervisor: Dave Smith (24/10/2026, 9:01 am)" for each level approved so far
+  function approvalTrail(rec) {
+    if (!rec.chain?.length) return [`Self-approved (under the self-approval limit)`];
+    return rec.chain.filter(c => c.status === 'approved')
+      .map(c => `${c.label}: ${c.decidedBy} (${nzTime(c.decidedAt)})`);
   }
 
   function poLabel(business, number) {
@@ -145,36 +207,101 @@ module.exports = function registerPurchaseOrders(app, deps) {
 
   // ── Decisions ──────────────────────────────────────────────────────────────
 
-  // Issues the PO number. Returns the updated record, or null if it was already decided
-  // (two clicks on the same email, or the approver and a forwarded copy).
-  function approve(business, requestId, decidedBy) {
-    let changed = false;
+  // Self-approval: issues the PO number on the call, no chain
+  function selfApprove(business, requestId) {
     const rec = updateRequest(business, requestId, (r, register) => {
-      if (r.status !== 'pending') return;
       r.status = 'approved';
       r.poNumber = poLabel(business, register.nextPo++);
-      r.decidedBy = decidedBy;
+      r.decidedBy = 'Self-approved';
       r.decidedAt = new Date().toISOString();
-      changed = true;
     });
-    if (!changed) return null;
-    logInteraction(`[PO:${business.config.id}] ${rec.id} APPROVED as ${rec.poNumber} by ${decidedBy} — ${rec.requester}, ${rec.supplier}, ${money(rec.amount)}, job ${rec.job}`);
+    logInteraction(`[PO:${business.config.id}] ${rec.id} SELF-APPROVED as ${rec.poNumber} — ${rec.requester}, ${rec.supplier}, ${money(rec.amount)}, job ${rec.job}`);
     notifyApproved(business, rec);
     return rec;
   }
 
-  function reject(business, requestId, decidedBy, reason) {
+  // One approver's yes at one step. Moves the request up to the next level, or at the
+  // last level issues the PO number. Returns null if this step was already decided
+  // (double click, or the other director got there first).
+  function approveStep(business, requestId, step, approverIndex) {
+    let outcome = null;
+    const rec = updateRequest(business, requestId, (r, register) => {
+      if (r.status !== 'pending' || r.step !== step) return;
+      const level = r.chain[step];
+      level.status = 'approved';
+      level.decidedBy = level.approvers[approverIndex].name;
+      level.decidedAt = new Date().toISOString();
+      if (step < r.chain.length - 1) {
+        r.step++;
+        outcome = 'next';
+      } else {
+        r.status = 'approved';
+        r.poNumber = poLabel(business, register.nextPo++);
+        r.decidedBy = `${level.decidedBy} (${level.label})`;
+        r.decidedAt = level.decidedAt;
+        outcome = 'final';
+      }
+    });
+    if (!outcome) return null;
+    const level = rec.chain[step];
+    if (outcome === 'final') {
+      logInteraction(`[PO:${business.config.id}] ${rec.id} APPROVED as ${rec.poNumber} — final approval by ${level.decidedBy} (${level.label})`);
+      notifyApproved(business, rec);
+    } else {
+      const next = rec.chain[rec.step];
+      logInteraction(`[PO:${business.config.id}] ${rec.id} approved by ${level.decidedBy} (${level.label}) → now with ${next.label}`);
+      requestApproval(business, rec).catch(e =>
+        logInteraction(`[ERROR] PO approval email failed (${rec.id} → ${next.label}): ${e.message}`));
+      emailRequester(business, rec, `PO request ${rec.id} — approved by ${level.label}, now with ${next.label}`, [
+        `${level.decidedBy} (${level.label}) has approved your request. It now needs approval from the ${next.label} (${firstNames(next.approvers)}).`,
+        `You'll get a text with the PO number once it's fully approved.`,
+        '',
+        describe(rec)
+      ].join('\n'));
+      syncToSharePoint(business, rec);
+    }
+    return rec;
+  }
+
+  // Emails every approver at the request's current step their own link
+  async function requestApproval(business, rec) {
+    const level = rec.chain[rec.step];
+    const done = approvalTrail(rec);
+    const after = rec.chain.slice(rec.step + 1).map(c => c.label);
+    await Promise.all(level.approvers.map((a, i) => sendEmail({
+      to: a.email,
+      subject: `PO approval needed (${level.label}) — ${rec.requester}: ${rec.supplier} ${money(rec.amount)} (job ${rec.job})${rec.retrospective ? ' [RETROSPECTIVE]' : ''}`,
+      body: [
+        `${rec.requester} has asked for a purchase order. It needs your approval as ${level.label}` +
+          (rec.chain.length > 1 ? ` (step ${rec.step + 1} of ${rec.chain.length}).` : '.'),
+        ...(done.length ? ['', 'Already approved by:', ...done.map(d => `  ${d}`)] : []),
+        ...(after.length ? ['', `After you it goes to: ${after.join(', then ')}.`] : []),
+        ...(level.approvers.length > 1 ? ['', `Also sent to ${firstNames(level.approvers.filter((_, j) => j !== i))} — whoever decides first, decides.`] : []),
+        '',
+        describe(rec),
+        '',
+        'Approve or reject here:',
+        reviewLink(business, rec, rec.step, i)
+      ].join('\n')
+    })));
+  }
+
+  function reject(business, requestId, step, approverIndex, reason) {
     let changed = false;
     const rec = updateRequest(business, requestId, r => {
-      if (r.status !== 'pending') return;
+      if (r.status !== 'pending' || r.step !== step) return;
+      const level = r.chain[step];
+      level.status = 'rejected';
+      level.decidedBy = level.approvers[approverIndex].name;
+      level.decidedAt = new Date().toISOString();
       r.status = 'rejected';
-      r.decidedBy = decidedBy;
-      r.decidedAt = new Date().toISOString();
+      r.decidedBy = `${level.decidedBy} (${level.label})`;
+      r.decidedAt = level.decidedAt;
       r.rejectReason = reason || '';
       changed = true;
     });
     if (!changed) return null;
-    logInteraction(`[PO:${business.config.id}] ${rec.id} REJECTED by ${decidedBy}${reason ? ` ("${reason}")` : ''}`);
+    logInteraction(`[PO:${business.config.id}] ${rec.id} REJECTED by ${rec.decidedBy}${reason ? ` ("${reason}")` : ''}`);
     const name = business.config.purchaseOrders.smsSignature || business.config.displayName;
     textRequester(business, rec,
       `${name}: your PO request for ${rec.supplier} (${money(rec.amount)}, job ${rec.job}) was NOT approved.${reason ? ` Reason: ${reason.replace(/[.!?]?$/, '.')}` : ''} Please don't purchase.`);
@@ -201,7 +328,8 @@ module.exports = function registerPurchaseOrders(app, deps) {
       '',
       describe(rec),
       '',
-      `Approved by: ${rec.decidedBy}, ${nzTime(rec.decidedAt)}`
+      'Approved by:',
+      ...approvalTrail(rec).map(t => `  ${t}`)
     ].join('\n');
     const subject = `PO ${rec.poNumber} approved — ${rec.supplier} ${money(rec.amount)} (job ${rec.job})`;
     buildPoPdf(business, rec)
@@ -222,8 +350,8 @@ module.exports = function registerPurchaseOrders(app, deps) {
         describe(rec),
         '',
         `Approval:    ${rec.tierLabel}`,
-        `Approved by: ${rec.decidedBy}`,
-        `Approved at: ${nzTime(rec.decidedAt)}`,
+        'Approved by:',
+        ...approvalTrail(rec).map(t => `  ${t}`),
         '',
         `Match the supplier invoice to ${rec.poNumber}.`
       ].join('\n')
@@ -297,12 +425,13 @@ module.exports = function registerPurchaseOrders(app, deps) {
         ['Description', rec.description],
         ['Amount (estimate)', `${money(rec.amount)} NZD`],
         ['Requested by', `${rec.requester}, ${nzTime(rec.requestedAt)}`],
-        ['Approved by', `${rec.decidedBy}, ${nzTime(rec.decidedAt)}`],
-        ['Approval level', rec.tierLabel]
+        ...(rec.chain?.length
+          ? rec.chain.map(c => [`Approved — ${c.label}`, `${c.decidedBy}, ${nzTime(c.decidedAt)}`])
+          : [['Approved', `Self-approved, ${nzTime(rec.decidedAt)}`]])
       ];
       for (const [label, value] of rows) {
-        doc.font('Helvetica').fontSize(10).fillColor('#5c6475').text(label, left, y, { width: 130 });
-        doc.font('Helvetica-Bold').fontSize(11).fillColor('#1d2330').text(value, left + 140, y, { width: width - 140 });
+        doc.font('Helvetica').fontSize(10).fillColor('#5c6475').text(label, left, y, { width: 165 });
+        doc.font('Helvetica-Bold').fontSize(11).fillColor('#1d2330').text(value, left + 175, y, { width: width - 175 });
         y = Math.max(doc.y, y + 14) + 10;
       }
 
@@ -369,8 +498,8 @@ module.exports = function registerPurchaseOrders(app, deps) {
         Retrospective: rec.retrospective,
         PurchaseDate: rec.purchaseDate || '',
         ApprovalTier: rec.tierLabel,
-        Approver: rec.approverEmail || '',
-        DecidedBy: rec.decidedBy || '',
+        Approver: rec.status === 'pending' ? `${rec.chain[rec.step].label}: ${firstNames(rec.chain[rec.step].approvers)}` : '',
+        DecidedBy: approvalTrail(rec).join('; ') + (rec.status === 'rejected' ? `; REJECTED by ${rec.decidedBy}` : ''),
         RejectReason: rec.rejectReason || '',
         RequestedAt: rec.requestedAt,
         ...(rec.decidedAt ? { DecidedAt: rec.decidedAt } : {})
@@ -417,11 +546,11 @@ module.exports = function registerPurchaseOrders(app, deps) {
       // the agent asks the next question instead of reporting a job "not found".
       Supplier = blankIfPlaceholder(Supplier);
       Description = blankIfPlaceholder(Description);
-      if (/^(a\s+)?(purchase\s+order|po)$/i.test(Description)) Description = '';
+      if (/^(an?\s+)?(purchase\s+order|p\.?\s?o\.?)(\s+number)?$/i.test(Description)) Description = '';
       Job_Number = blankIfPlaceholder(Job_Number);
       Amount = blankIfPlaceholder(Amount);
       const missing = [
-        !Description && ['what they need', 'What do you need?'],
+        !Description && ['what they are buying', 'What are you buying?'],
         !(parseAmount(Amount) > 0) && ['the cost', 'How much will it cost?'],
         !Supplier && ['the supplier', 'Where will you buy it from?'],
         !Job_Number && ['the job', 'What job is it for?']
@@ -450,7 +579,7 @@ module.exports = function registerPurchaseOrders(app, deps) {
           : 'Already submitted for approval. Do not submit again.', { po_number: dup.poNumber || '' });
       }
 
-      const tier = pickTier(po, amount);
+      const chain = buildChain(business, amount, job, staff);
       const rec = {
         id: `REQ-${String(register.nextRequest++).padStart(4, '0')}`,
         status: 'pending',
@@ -464,9 +593,10 @@ module.exports = function registerPurchaseOrders(app, deps) {
         amount,
         retrospective: isYes(Already_Purchased),
         purchaseDate: isYes(Already_Purchased) ? String(Purchase_Date || '').trim() : '',
-        tier: tier.approver,
-        tierLabel: tier.label,
-        approverEmail: tier.approver === 'self' ? '' : approverEmail(business, tier, job),
+        tierLabel: chain.length ? chain.map(c => c.label).join(' → ') : `Self-approved (under ${money(po.selfApproveUnder)})`,
+        chain,
+        step: 0,
+        linkBase: process.env.PUBLIC_BASE_URL || `https://${req.headers.host}`,
         requestedAt: new Date().toISOString(),
         callSid: call_sid || ''
       };
@@ -474,32 +604,25 @@ module.exports = function registerPurchaseOrders(app, deps) {
       saveRegister(business, register);
       logInteraction(`[PO:${business.config.id}] ${rec.id} from ${rec.requester}: ${rec.supplier} ${money(amount)} job ${rec.job} → ${rec.tierLabel}${rec.retrospective ? ' [RETROSPECTIVE]' : ''}`);
 
-      if (tier.approver === 'self') {
-        const approved = approve(business, rec.id, 'Self-approved');
+      if (!chain.length) {
+        const approved = selfApprove(business, rec.id);
         const spoken = approved.poNumber.replace(/-/g, '').split('').join(' ');
         return reply('approved',
           `Approved. The PO number is ${approved.poNumber}. Read it back to the caller slowly, character by character ("${spoken}"), and tell them it has also been texted to them.`,
           { po_number: approved.poNumber });
       }
 
-      const host = process.env.PUBLIC_BASE_URL || `https://${req.headers.host}`;
-      const link = `${host}/po/review/${business.config.id}/${rec.id}?t=${linkToken(business, rec.id)}`;
-      await sendEmail({
-        to: rec.approverEmail,
-        subject: `PO approval needed — ${rec.requester}: ${rec.supplier} ${money(amount)} (job ${rec.job})${rec.retrospective ? ' [RETROSPECTIVE]' : ''}`,
-        body: [
-          `${rec.requester} has asked for a purchase order. It needs your approval (${tier.label}).`,
-          '',
-          describe(rec),
-          '',
-          `Approve or reject here:`,
-          link
-        ].join('\n')
-      });
+      await requestApproval(business, rec);
       syncToSharePoint(business, rec);
 
+      // Spoken aloud, so people's names only — never read an email address to the caller
+      const route = chain.map(c => {
+        const names = firstNames(c.approvers.filter(a => !a.name.includes('@')));
+        return `the ${c.label.toLowerCase()}${names ? ` (${names})` : ''}`;
+      });
       return reply('pending_approval',
-        `Submitted for approval by the ${tier.label.toLowerCase()}. Tell the caller they will get a text with the PO number once it is approved${rec.retrospective ? '' : ', and not to buy until then'}.`);
+        `Submitted for approval. It goes to ${route.length > 1 ? `${route.slice(0, -1).join(', then ')}, and finally ${route.at(-1)}` : route[0]}. ` +
+        `Tell the caller who it has gone to, that they will get a text with the PO number once it is fully approved${rec.retrospective ? '' : ', and not to buy until then'}.`);
     } catch (err) {
       console.error('[Error] /purchase-order:', err.message);
       logInteraction(`[ERROR] /purchase-order (${business.config.id}): ${err.message}`);
@@ -523,6 +646,8 @@ module.exports = function registerPurchaseOrders(app, deps) {
   textarea{width:100%;box-sizing:border-box;min-height:60px;margin:8px 0 12px;font:inherit;padding:8px}
   button{font:inherit;font-weight:600;border:0;border-radius:6px;padding:12px 20px;cursor:pointer;margin-right:8px}
   .ok{background:#1f7a3f;color:#fff} .no{background:#b42318;color:#fff} .status{font-size:18px;font-weight:600}
+  h2{font-size:15px;margin:0 0 8px} .chain{list-style:none;padding:0;margin:0 0 20px} .chain li{padding:4px 0}
+  .mark{display:inline-block;width:18px;font-weight:700}
 </style></head><body><main>${inner}</main></body></html>`;
   }
 
@@ -530,17 +655,30 @@ module.exports = function registerPurchaseOrders(app, deps) {
     const rows = [
       ['Requester', rec.requester], ['Job', `${rec.job} — ${rec.jobDescription}`],
       ['Supplier', rec.supplier], ['For', rec.description], ['Amount', money(rec.amount)],
-      ['Approval', rec.tierLabel], ['Requested', nzTime(rec.requestedAt)], ['Request', rec.id]
+      ['Requested', nzTime(rec.requestedAt)], ['Request', rec.id]
     ];
     return (rec.retrospective
       ? `<div class="flag">Retrospective — already purchased${rec.purchaseDate ? ` (${escHtml(rec.purchaseDate)})` : ''}</div>` : '')
-      + `<dl>${rows.map(([k, v]) => `<dt>${k}</dt><dd>${escHtml(v)}</dd>`).join('')}</dl>`;
+      + `<dl>${rows.map(([k, v]) => `<dt>${k}</dt><dd>${escHtml(v)}</dd>`).join('')}</dl>`
+      + chainHtml(rec);
+  }
+
+  // The approval cascade with each level's state: ✓ approved, ✗ rejected, → current, · waiting
+  function chainHtml(rec) {
+    if (!rec.chain?.length) return '';
+    const items = rec.chain.map((c, i) => {
+      const mark = c.status === 'approved' ? '✓' : c.status === 'rejected' ? '✗'
+        : rec.status === 'pending' && i === rec.step ? '→' : '·';
+      const who = c.decidedBy ? `${escHtml(c.decidedBy)}, ${escHtml(nzTime(c.decidedAt))}` : escHtml(firstNames(c.approvers));
+      return `<li><span class="mark">${mark}</span> <b>${escHtml(c.label)}</b> — ${who}</li>`;
+    }).join('');
+    return `<h2>Approvals</h2><ol class="chain">${items}</ol>`;
   }
 
   function statusHtml(rec) {
-    if (rec.status === 'pending') return '<p class="status">Still awaiting a decision</p>';
+    if (rec.status === 'pending') return `<p class="status">Waiting on the ${escHtml(rec.chain[rec.step].label)}</p>`;
     return rec.status === 'approved'
-      ? `<p class="status">Approved — ${escHtml(rec.poNumber)}</p><p>By ${escHtml(rec.decidedBy)}, ${escHtml(nzTime(rec.decidedAt))}. ${escHtml(rec.requester)} has been texted the PO number.</p>`
+      ? `<p class="status">Approved — ${escHtml(rec.poNumber)}</p><p>${escHtml(rec.requester)} has been texted the PO number.</p>`
       : `<p class="status">Rejected</p><p>By ${escHtml(rec.decidedBy)}, ${escHtml(nzTime(rec.decidedAt))}.${rec.rejectReason ? ` Reason: ${escHtml(rec.rejectReason)}` : ''}</p>`;
   }
 
@@ -548,43 +686,50 @@ module.exports = function registerPurchaseOrders(app, deps) {
     let business;
     try { business = getBusiness(req.params.businessId); }
     catch (e) { res.status(404).send(page('Not found', '<h1>Not found</h1>')); return {}; }
-    const token = req.query.t || req.body?.t;
-    if (!business.config.purchaseOrders || !tokenValid(business, req.params.requestId, token)) {
+    const src = req.method === 'POST' ? req.body : req.query;
+    const step = Number(src.s), approverIndex = Number(src.a), token = src.t;
+    const rec = business.config.purchaseOrders && loadRegister(business).requests.find(r => r.id === req.params.requestId);
+    // Requests from before the cascade have no chain and their links no longer verify
+    if (!rec?.chain?.[step]?.approvers?.[approverIndex]
+        || !tokenValid(business, rec.id, step, approverIndex, token)) {
       res.status(403).send(page('Invalid link', '<h1>This link is not valid</h1>'));
       return {};
     }
-    const rec = loadRegister(business).requests.find(r => r.id === req.params.requestId);
-    if (!rec) { res.status(404).send(page('Not found', '<h1>Request not found</h1>')); return {}; }
-    return { business, rec, token };
+    return { business, rec, step, approverIndex, token };
   }
 
   app.get('/po/review/:businessId/:requestId', (req, res) => {
-    const { rec, token } = lookup(req, res);
+    const { rec, step, approverIndex, token } = lookup(req, res);
     if (!rec) return;
+    const level = rec.chain[step];
     const action = `/po/decide/${encodeURIComponent(req.params.businessId)}/${encodeURIComponent(rec.id)}`;
-    const body = rec.status === 'pending'
-      ? `<form method="post" action="${action}">
+    const yourTurn = rec.status === 'pending' && rec.step === step;
+    const body = yourTurn
+      ? `<p>You are approving as <b>${escHtml(level.label)}</b> (${escHtml(level.approvers[approverIndex].name)}).</p>
+         <form method="post" action="${action}">
+           <input type="hidden" name="s" value="${step}"><input type="hidden" name="a" value="${approverIndex}">
            <input type="hidden" name="t" value="${escHtml(token)}">
            <label for="reason">Reason (optional, sent to ${escHtml(rec.requester)} if rejected)</label>
            <textarea id="reason" name="reason"></textarea>
            <button class="ok" name="decision" value="approve">Approve</button>
            <button class="no" name="decision" value="reject">Reject</button>
          </form>`
-      : statusHtml(rec);
+      : `${level.status !== 'pending' ? '<p>The ' + escHtml(level.label) + ' step has already been decided.</p>' : ''}${statusHtml(rec)}`;
     res.status(200).send(page(`PO request ${rec.id}`, `<h1>Purchase order request</h1>${detailsHtml(rec)}${body}`));
   });
 
   app.post('/po/decide/:businessId/:requestId', (req, res) => {
-    const { business, rec } = lookup(req, res);
+    const { business, rec, step, approverIndex } = lookup(req, res);
     if (!rec) return;
-    const decidedBy = rec.approverEmail || 'Approver';
     const reason = String(req.body.reason || '').trim().slice(0, 300);
     const result = req.body.decision === 'approve'
-      ? approve(business, rec.id, decidedBy)
-      : req.body.decision === 'reject' ? reject(business, rec.id, decidedBy, reason) : null;
-    // null = already decided (double click, or a second approver got there first)
-    const final = result || loadRegister(business).requests.find(r => r.id === rec.id);
+      ? approveStep(business, rec.id, step, approverIndex)
+      : req.body.decision === 'reject' ? reject(business, rec.id, step, approverIndex, reason) : null;
+    // null = already decided (double click, or the other approver at this level got there first)
+    const latest = result || loadRegister(business).requests.find(r => r.id === rec.id);
+    const passedOn = result && result.status === 'pending'
+      ? `<p class="status">Approved — passed to the ${escHtml(result.chain[result.step].label)}</p>` : statusHtml(latest);
     res.status(200).send(page(`PO request ${rec.id}`,
-      `<h1>Purchase order request</h1>${detailsHtml(final)}${result ? '' : '<p>This request had already been decided.</p>'}${statusHtml(final)}`));
+      `<h1>Purchase order request</h1>${detailsHtml(latest)}${result ? '' : '<p>This step had already been decided.</p>'}${passedOn}`));
   });
 };

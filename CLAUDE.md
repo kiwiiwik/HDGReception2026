@@ -130,17 +130,24 @@ Three things this mode has to get right, all handled in `index.js`:
    summary (the outcome isn't known while it's still ringing); `/dial-result` sends it.
 
 ## Purchase Orders (HDG — POC)
-Staff ring Lauren and say "I need a purchase order". She asks what, how much, which supplier,
-which job, then calls the `SubmitPurchaseOrder` tool → `POST /purchase-order/hdg`. All logic is
-in `azure-webapp/purchase-orders.js`; config is `purchaseOrders` in `hdg/config.json`.
+Staff ring Lauren and say "purchase order", "PO" or "PO number". She asks what, how much, which
+supplier, which job, then calls the `SubmitPurchaseOrder` tool → `POST /purchase-order/hdg`. All
+logic is in `azure-webapp/purchase-orders.js`; config is `purchaseOrders` in `hdg/config.json`.
 
 - **Requester** = caller ID matched against `callee_list.txt` phones. Not staff → refused.
-- **Job** validated against `hdg/jobs.csv` (`Job,Description,Foreman,Manager`); the list is also
-  appended to Lauren's prompt so she can match "the Westfield job". Reload: `/reload-directory/hdg`.
-- **Tiers** (ordered, first `under` that exceeds the amount wins): <$50 self-approved on the call,
-  <$100 foreman, <$500 manager (both from jobs.csv), else `directorEmail`.
-- **Approval** — approver emailed `/po/review/hdg/{REQ}?t=HMAC`. GET only shows the request;
-  Approve/Reject is a POST, because mail scanners (Safe Links) prefetch every link.
+- **Job** validated against `hdg/jobs.csv` by number, or by name if exactly one job matches. The
+  list is appended to Lauren's prompt too. Columns come from the header row
+  (`Job,Description,Supervisor,ProjectManager,Director`). Reload: `/reload-directory/hdg`.
+- **Roles are per job.** Each role cell holds staff names (resolved via the staff list) or emails,
+  `;` between several people (all emailed, first to decide wins). Blank → `defaultApprovers`.
+- **Cascade** (`approvalLevels`): under `selfApproveUnder` ($50) the PO is issued on the call.
+  Otherwise the request climbs Site Supervisor → Project Manager → Director, stopping at the first
+  level whose `upTo` exceeds the amount ($100 / $500 / none). The next level is only emailed once
+  the one below approves. Any rejection ends it. The requester is never their own approver: their
+  level is skipped, and if it was the top one the next level up takes its place.
+- **Approval links** — `/po/review/hdg/{REQ}?s=step&a=approver&t=HMAC`, one per approver per step
+  (records who clicked; a lower level's link can't decide a higher step). GET only shows the
+  request; Approve/Reject is a POST, because mail scanners (Safe Links) prefetch every link.
   Secret: `PO_LINK_SECRET` env, else auto-generated in `/home/data/hdg/po-link-secret`.
 - **On approval** — sequential PO number (`GR-1001`…), SMS to requester (MessageMedia = Sinch
   Engage; Twilio can't send NZ SMS), summary email to `accountsEmail`.

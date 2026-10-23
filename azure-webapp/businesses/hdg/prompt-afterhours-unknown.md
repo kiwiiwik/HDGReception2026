@@ -53,10 +53,12 @@ Take a complete message and send it to the right staff member using `SendMessage
 
 # Purchase Orders
 
-Staff can ask you for a purchase order (a "PO") for something they need to buy from a supplier. If the caller says anything like "I need a purchase order", "can I get a PO", "I need an order number" or "I need a PO for Bunnings", **handle it yourself. Do not transfer the call or take a message.**
+Staff can ask you for a purchase order for something they need to buy from a supplier. **Trigger words: "purchase order", "PO" or "PO number"**, anywhere in what they say: "I need a PO", "can I get a PO number", "PO for Bunnings please", or just "purchase order". Speech recognition often mishears these, so treat sound-alikes the same way: "picture order", "purchase tour", "picture tour", "pee oh", "P.O.", "order number". **When you hear any of them, go straight into taking the purchase order.** Don't ask whether they want a purchase order, don't ask them to repeat it, and never transfer the call or take a message instead.
+
+If they already gave details in the same breath ("I need a PO for about sixty bucks of timber from Bunnings"), use them and only ask for what is still missing.
 
 Ask these one at a time, in this order, and skip any they've already told you:
-1. **"What do you need?"** What they're buying, and briefly what it's for.
+1. **"What are you buying?"** The goods, and briefly what they're for. (Not "What do you need?": they've just told you they need a purchase order.)
 2. **"How much will it cost?"** A rough estimate in dollars is fine.
 3. **"Where will you buy it from?"** The supplier, e.g. Bunnings, Hilti, Placemakers.
 4. **"What job is it for?"** They may give the job number or the job's name. Match it to the Job List at the end of these instructions and use the job number. If it could be more than one job, ask which.
@@ -70,7 +72,7 @@ Confirm once, briefly:
 
 When they confirm, call `SubmitPurchaseOrder`, then say what its response tells you to:
 - **approved**: read the PO number back slowly, one character at a time, and say it's been texted to them too. Offer to repeat it.
-- **pending_approval**: tell them it's gone for approval and they'll get a text with the PO number once it's approved. If they haven't bought it yet, ask them to wait for the text before buying.
+- **pending_approval**: tell them who it has gone to (the response says, e.g. the site supervisor, then the project manager), and that they'll get a text with the PO number once it's fully approved. If they haven't bought it yet, ask them to wait for the text before buying.
 - **job_not_found**: read the job number back and ask them to check it. Submit again only if they give a different job.
 - **not_staff** or anything else: follow the instructions in the response.
 

@@ -19,14 +19,19 @@
     "firstPoNumber": 1001,
     "smsSignature": "Gibbons Rail",
     "companyName": "Gibbons Rail",
-    "_tiers_note": "Ordered. First tier whose 'under' exceeds the amount wins; the last tier catches the rest. foreman/manager come from jobs.csv, director from directorEmail.",
-    "tiers": [
-      { "under": 50,  "approver": "self",     "label": "Self-approved (under $50)" },
-      { "under": 100, "approver": "foreman",  "label": "Foreman" },
-      { "under": 500, "approver": "manager",  "label": "Project Manager" },
-      {               "approver": "director", "label": "Director" }
+    "selfApproveUnder": 50,
+    "_approvalLevels_note": "Cascade, lowest first. A request climbs the levels in turn and stops at the first whose 'upTo' is above the amount; the last level has no limit. 'role' is the jobs.csv column (header with a lower-case first letter) holding who approves at that level on each job.",
+    "approvalLevels": [
+      { "role": "supervisor",     "label": "Site Supervisor", "upTo": 100 },
+      { "role": "projectManager", "label": "Project Manager", "upTo": 500 },
+      { "role": "director",       "label": "Director" }
     ],
-    "directorEmail": "director@totalrail.co.nz",
+    "_defaultApprovers_note": "Used when a job's role cell is blank. Staff names or emails, ';' between several.",
+    "defaultApprovers": {
+      "supervisor": "foreman@totalrail.co.nz",
+      "projectManager": "approver@totalrail.co.nz",
+      "director": "director@totalrail.co.nz"
+    },
     "accountsEmail": "accountant@totalrail.co.nz",
     "defaultApproverEmail": "approver@totalrail.co.nz",
     "_testRequesterEmail_note": "POC only: sends every requester's outcome email here instead of their staff-list address. Remove for live.",

@@ -2,6 +2,7 @@
 //
 //   node scripts/add-po-tool-hdg.js            # dry run — shows current tools and the new one
 //   node scripts/add-po-tool-hdg.js --create   # create the tool and attach it to the agent
+//   node scripts/add-po-tool-hdg.js --update   # rewrite the attached tool from TOOL below
 //
 // Only tool_ids is patched; the agent's voice, LLM, prompt and existing tools are left as
 // they are. Run once — it refuses if the agent already has the tool.
@@ -13,6 +14,7 @@ const axios = require('axios');
 const API = 'https://api.elevenlabs.io/v1';
 const KEY = process.env.ELEVENLABS_API_KEY;
 const CREATE = process.argv.includes('--create');
+const UPDATE = process.argv.includes('--update'); // rewrite the already-attached tool's definition
 
 const BASE_URL = 'https://receptionisthdg.azurewebsites.net';
 const BUSINESS = 'hdg';
@@ -51,7 +53,7 @@ const TOOL = {
         type: 'object',
         required: ['Description', 'Amount', 'Supplier', 'Job_Number', 'Already_Purchased', 'caller_id', 'call_sid'],
         properties: {
-          Description: llmField('What is being bought and why, in a few words'),
+          Description: llmField('Every item being bought with its quantity, word for word as the caller confirmed it, e.g. "five 20-kilogram bags of cement, one claw hammer". Never shortened or summarised.'),
           Amount: llmField('Estimated cost in NZ dollars, digits only, e.g. "85"'),
           Supplier: llmField('The supplier, e.g. "Bunnings"'),
           Job_Number: llmField('The job number from the Job List, e.g. "GR2401"'),
@@ -83,7 +85,21 @@ const summarise = (agent) => {
   console.log(`  current tools: ${before.toolNames.join(', ') || '(none)'}  [${before.toolIds.length} ids]`);
   console.log(`  llm: ${before.llm}   built-ins: ${before.builtIns.join(', ') || 'none'}`);
   if (before.toolNames.includes(TOOL_NAME)) {
-    console.log(`\n${TOOL_NAME} is already attached — nothing to do.`);
+    if (!UPDATE) {
+      console.log(`\n${TOOL_NAME} is already attached. Use --update to rewrite it from this script's definition.`);
+      return;
+    }
+    // Find the attached tool's id by name, then replace its config in place
+    let toolId = null;
+    for (const id of before.toolIds) {
+      const t = (await axios.get(`${API}/convai/tools/${id}`, h)).data;
+      if (t.tool_config?.name === TOOL_NAME) { toolId = id; break; }
+    }
+    if (!toolId) throw new Error(`${TOOL_NAME} is listed on the agent but no tool_id matched`);
+    await axios.patch(`${API}/convai/tools/${toolId}`, TOOL, h);
+    const t = (await axios.get(`${API}/convai/tools/${toolId}`, h)).data;
+    console.log(`\nUpdated ${TOOL_NAME} (${toolId}). Description field now:`);
+    console.log(`  ${t.tool_config.api_schema.request_body_schema.properties.Description.description}`);
     return;
   }
 

@@ -59,6 +59,7 @@ const TOOL = {
           Job_Number: llmField('The job number from the Job List, e.g. "GR2401"'),
           Already_Purchased: llmField('"yes" only if the caller said they have already bought it, otherwise "no"'),
           Purchase_Date: llmField('When it was bought, only if already purchased, e.g. "yesterday". Empty otherwise.'),
+          Caller_Confirmation: llmField('The caller\'s exact words when they confirmed the details you read back or texted, e.g. "yes, that looks correct". Leave EMPTY until the caller has actually said it — never fill it in yourself, and never call the tool again just because they have gone quiet.'),
           caller_id: sysVar('system__caller_id'),
           call_sid: sysVar('system__call_sid')
         }

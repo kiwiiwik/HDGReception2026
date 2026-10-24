@@ -208,6 +208,7 @@ module.exports = function registerPurchaseOrders(app, deps) {
         ? `Purchased:   ALREADY PURCHASED${rec.purchaseDate ? ` (${rec.purchaseDate})` : ''} — retrospective request`
         : `Purchased:   Not yet — PO needed before purchase`,
       `Requested:   ${nzTime(rec.requestedAt)}`,
+      ...(rec.callerConfirmation ? [`Confirmed:   "${rec.callerConfirmation}" (requester, on the call)`] : []),
       `Request ID:  ${rec.id}`
     ].join('\n');
   }
@@ -544,7 +545,7 @@ module.exports = function registerPurchaseOrders(app, deps) {
 
     try {
       console.log(`[PO:${business.config.id}] Payload:`, req.body);
-      let { Job_Number, Supplier, Description, Amount, Already_Purchased, Purchase_Date, caller_id, call_sid } = req.body;
+      let { Job_Number, Supplier, Description, Amount, Already_Purchased, Purchase_Date, Caller_Confirmation, caller_id, call_sid } = req.body;
       ({ caller_id, call_sid } = fillFromBridge(call_sid, { caller_id, call_sid }));
 
       const staff = findStaffByPhone(business, caller_id);
@@ -638,6 +639,19 @@ module.exports = function registerPurchaseOrders(app, deps) {
           `If they say yes, call this tool again with exactly the same details to submit it. ` +
           `If anything is wrong, get the correct detail and call again with the corrected details.`);
       }
+      // Same details again — but only the caller's yes may submit. On 2026-10-24 the agent
+      // re-sent the request on a silence timeout while the caller was still reading the
+      // texted list, and that counted as confirmation. The confirming call must carry the
+      // caller's own words, and they must be a yes.
+      const said = String(Caller_Confirmation || '').trim();
+      const saidYes = /\b(yes|yeah|yep|yup|ya|correct|right|that'?s it|all good|looks good|sweet|confirm(ed)?|go ahead)\b/i.test(said)
+        && !/\b(no|nope|not|wrong|change|except|but)\b/i.test(said);
+      if (!saidYes) {
+        return reply('awaiting_answer',
+          `Nothing has been submitted. The caller has not confirmed yet${said ? ` ("${said}" is not a yes)` : ''}. ` +
+          `Wait for their answer — they may still be reading the text. If they say it's right, call this tool again with ` +
+          `Caller_Confirmation set to their exact words. If something is wrong, get the correction and call again with the corrected details.`);
+      }
       awaitingConfirm.delete(callKey);
 
       const chain = buildChain(business, amount, job, staff);
@@ -659,6 +673,7 @@ module.exports = function registerPurchaseOrders(app, deps) {
         step: 0,
         linkBase: process.env.PUBLIC_BASE_URL || `https://${req.headers.host}`,
         requestedAt: new Date().toISOString(),
+        callerConfirmation: said,
         callSid: call_sid || ''
       };
       register.requests.push(rec);

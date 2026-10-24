@@ -603,10 +603,16 @@ module.exports = function registerPurchaseOrders(app, deps) {
       const callKey = call_sid || caller_id;
       if (awaitingConfirm.get(callKey)?.key !== confirmKey) {
         awaitingConfirm.set(callKey, { key: confirmKey, at: Date.now() });
-        const spokenAmount = Number.isInteger(amount) ? `$${amount}` : money(amount);
+        // Question first and kept short: on 2026-10-24 a five-item read-back was cut off
+        // mid-sentence before "Is that right?", and caller and agent both waited in silence
+        // until the call timed out.
+        const spokenAmount = amount >= 100 || Number.isInteger(amount) ? `$${Math.round(amount)}` : money(amount);
+        const items = Description.split(/,\s*|\s+and\s+/).map(s => s.trim()).filter(Boolean);
+        const spokenItems = items.length > 2 ? `${items[0]} and the other ${items.length - 1} items` : Description;
+        const jobName = job.description.split(/[\s(]+/)[0]; // "Westfield siding renewal" → "Westfield"
         return reply('confirm',
-          `Nothing has been submitted yet. Read this back to the caller and ask if it's right: ` +
-          `"So that's about ${spokenAmount} at ${Supplier} for ${Description}, on the ${job.description} job. Is that right?" ` +
+          `Nothing has been submitted yet. Say exactly this to the caller, all of it, then stop and wait for their answer: ` +
+          `"Can I just check this is right? About ${spokenAmount} at ${Supplier}, for ${spokenItems}, on the ${jobName} job." ` +
           `If they say yes, call this tool again with exactly the same details to submit it. ` +
           `If anything is wrong, get the correct detail and call again with the corrected details.`);
       }

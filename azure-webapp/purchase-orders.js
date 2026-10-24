@@ -202,7 +202,9 @@ module.exports = function registerPurchaseOrders(app, deps) {
       `Requester:   ${rec.requester} (${rec.requesterPhone})`,
       `Job:         ${rec.job} — ${rec.jobDescription}`,
       `Supplier:    ${rec.supplier}`,
-      `For:         ${rec.description}`,
+      ...(rec.lineItems?.length
+        ? ['Items:', ...rec.lineItems.map(l => `  ${lineText(l)}`)]
+        : [`For:         ${rec.description}`]),
       `Amount:      ${money(rec.amount)}`,
       rec.retrospective
         ? `Purchased:   ALREADY PURCHASED${rec.purchaseDate ? ` (${rec.purchaseDate})` : ''} — retrospective request`
@@ -430,7 +432,9 @@ module.exports = function registerPurchaseOrders(app, deps) {
       const rows = [
         ['Supplier', rec.supplier],
         ['Job', `${rec.job} — ${rec.jobDescription}`],
-        ['Description', rec.description],
+        rec.lineItems?.length
+          ? ['Items', rec.lineItems.map(lineText).join('\n')]
+          : ['Description', rec.description],
         ['Amount (estimate)', `${money(rec.amount)} NZD`],
         ['Requested by', `${rec.requester}, ${nzTime(rec.requestedAt)}`],
         ...(rec.chain?.length
@@ -529,9 +533,69 @@ module.exports = function registerPurchaseOrders(app, deps) {
   // ── Agent webhook ──────────────────────────────────────────────────────────
   // call → details awaiting the caller's yes (see the read-back gate below)
   const awaitingConfirm = new Map();
+  // call → { items: [{ qty, item }], at }. The order's lines, saved one at a time as the
+  // caller reads them out and the agent echoes each back (AddLineItem etc.). Held here, not
+  // by the agent: a long list passed as one tool argument is what made Flash Lite speak
+  // its tool call aloud as code, and nobody can check a 40-second list by ear.
+  const lineItems = new Map();
   setInterval(() => {
     for (const [k, v] of awaitingConfirm) if (Date.now() - v.at > 60 * 60 * 1000) awaitingConfirm.delete(k);
+    for (const [k, v] of lineItems) if (Date.now() - v.at > 60 * 60 * 1000) lineItems.delete(k);
   }, 30 * 60 * 1000).unref();
+
+  const lineText = l => `${l.qty} × ${l.item}`;
+  const listForAgent = items => items.map((l, i) => `${i + 1}. ${l.qty} ${l.item}`).join('; ');
+
+  // ── Line-item tools ────────────────────────────────────────────────────────
+  //   POST /po-line/:businessId/add     { Quantity, Item }
+  //   POST /po-line/:businessId/change  { Line_Number, Quantity, Item }
+  //   POST /po-line/:businessId/remove  { Line_Number }
+  app.post('/po-line/:businessId/:action', (req, res) => {
+    const reply = (status, message) => res.status(200).json({ status, message });
+    let business;
+    try { business = getBusiness(req.params.businessId); }
+    catch (e) { return res.status(404).send(e.message); }
+    if (!business.config.purchaseOrders) return res.status(404).send('No purchaseOrders config');
+
+    let { Quantity, Item, Line_Number, caller_id, call_sid } = req.body;
+    ({ caller_id, call_sid } = fillFromBridge(call_sid, { caller_id, call_sid }));
+    console.log(`[PO-line:${business.config.id}] ${req.params.action}:`, req.body);
+    if (!findStaffByPhone(business, caller_id)) {
+      return reply('not_staff', 'This phone number is not registered to a staff member, so a purchase order cannot be raised from it. Apologise, ask them to call back from their work mobile or contact the office, then end the call.');
+    }
+    const callKey = call_sid || caller_id;
+    const entry = lineItems.get(callKey) || { items: [] };
+    entry.at = Date.now();
+    lineItems.set(callKey, entry);
+    const items = entry.items;
+
+    const qty = blankIfPlaceholder(Quantity);
+    const item = blankIfPlaceholder(Item);
+    const n = parseInt(String(Line_Number || '').replace(/\D/g, ''), 10);
+    const total = () => `The order now has ${items.length} line${items.length === 1 ? '' : 's'}: ${listForAgent(items) || 'none'}.`;
+
+    switch (req.params.action) {
+      case 'add':
+        if (!item || isPurchaseOrderWords(item)) return reply('need_item', 'No item was given. Ask the caller what the item is.');
+        if (!qty) return reply('need_quantity', `Not saved: "${item}" has no quantity. Ask the caller how many, then call AddLineItem again with the quantity.`);
+        items.push({ qty, item });
+        return reply('added',
+          `Saved as line ${items.length}. Echo it back to the caller in a few words, e.g. "${qty} ${item}, got it", then ask "Next item?". ` +
+          `When they say that's everything, move on to the cost. ${total()}`);
+      case 'change':
+        if (!(n >= 1 && n <= items.length)) return reply('no_such_line', `There is no line ${Line_Number || ''}. ${total()} Ask the caller which item they mean.`);
+        if (qty) items[n - 1].qty = qty;
+        if (item) items[n - 1].item = item;
+        return reply('changed', `Line ${n} is now ${items[n - 1].qty} ${items[n - 1].item}. Echo the change back in a few words. ${total()}`);
+      case 'remove': {
+        if (!(n >= 1 && n <= items.length)) return reply('no_such_line', `There is no line ${Line_Number || ''}. ${total()} Ask the caller which item they mean.`);
+        const [gone] = items.splice(n - 1, 1);
+        return reply('removed', `Removed ${gone.qty} ${gone.item}. Tell the caller it's taken off. ${total()}`);
+      }
+      default:
+        return res.status(404).send('Unknown action');
+    }
+  });
 
   // Always 200 with a "message" the agent acts on — a 4xx just makes the LLM say
   // "something went wrong" instead of asking the caller to fix the job number.
@@ -563,8 +627,13 @@ module.exports = function registerPurchaseOrders(app, deps) {
       if (isPurchaseOrderWords(Description)) Description = '';
       Job_Number = blankIfPlaceholder(Job_Number);
       Amount = blankIfPlaceholder(Amount);
+      // Saved line items are the order. Description is only the fallback for a call where
+      // the agent never used AddLineItem.
+      const callKey = call_sid || caller_id;
+      const lines = (lineItems.get(callKey)?.items || []).map(l => ({ ...l }));
+      if (lines.length) Description = lines.map(lineText).join('; ');
       const missing = [
-        !Description && ['what they are buying', 'What are you buying?'],
+        !Description && ['the items', 'Read me the items one at a time. What\'s the first one?'],
         !(parseAmount(Amount) > 0) && ['the cost', 'How much will it cost?'],
         !Supplier && ['the supplier', 'Where will you buy it from?'],
         !Job_Number && ['the job', 'What job is it for?']
@@ -573,6 +642,7 @@ module.exports = function registerPurchaseOrders(app, deps) {
         return reply('missing_details',
           `Nothing has been submitted yet. Still needed: ${missing.map(m => m[0]).join(', ')}. ` +
           `Ask the caller "${missing[0][1]}" and then the remaining questions one at a time. ` +
+          (!Description ? `Save each item with AddLineItem as the caller gives it, and echo it back before asking for the next. ` : '') +
           `Do not mention errors or anything being "not found". Call this tool again only when you have all four and the caller has confirmed.`);
       }
 
@@ -603,11 +673,20 @@ module.exports = function registerPurchaseOrders(app, deps) {
       // resends the description verbatim, so this doesn't loop in practice.
       const loose = s => String(s).toLowerCase().replace(/[^a-z0-9]/g, '');
       const confirmKey = [job.job, amount, loose(Supplier), loose(Description)].join('|');
-      const callKey = call_sid || caller_id;
       if (awaitingConfirm.get(callKey)?.key !== confirmKey) {
         awaitingConfirm.set(callKey, { key: confirmKey, at: Date.now() });
         const spokenAmount = Number.isInteger(amount) ? `$${amount}` : money(amount);
         const jobName = job.description.split(/[\s(]+/)[0]; // "Westfield siding renewal" → "Westfield"
+
+        // Line items were each echoed and confirmed as they were given, so the final
+        // check is the totals only — short enough that line noise can't cut it off.
+        if (lines.length) {
+          return reply('confirm',
+            `Nothing has been submitted yet. Say exactly this, then stop and wait for their answer: ` +
+            `"That's ${lines.length} item${lines.length === 1 ? '' : 's'}, about ${spokenAmount} at ${Supplier}, on the ${jobName} job. Shall I send it for approval?" ` +
+            `If they say yes, call this tool again with the same details and Caller_Confirmation set to their exact words. ` +
+            `If they want to change an item, use ChangeLineItem or RemoveLineItem, then call this tool again.`);
+        }
 
         // Long lists are texted, not read out. Spoken in full, a 7-item order took ~40s
         // and background noise on a site phone interrupted it every time (2026-10-24) —
@@ -665,6 +744,7 @@ module.exports = function registerPurchaseOrders(app, deps) {
         jobDescription: job.description,
         supplier: String(Supplier).trim(),
         description: String(Description).trim(),
+        lineItems: lines,
         amount,
         retrospective: isYes(Already_Purchased),
         purchaseDate: isYes(Already_Purchased) ? String(Purchase_Date || '').trim() : '',
@@ -678,6 +758,7 @@ module.exports = function registerPurchaseOrders(app, deps) {
       };
       register.requests.push(rec);
       saveRegister(business, register);
+      lineItems.delete(callKey); // a second PO on the same call starts with an empty list
       logInteraction(`[PO:${business.config.id}] ${rec.id} from ${rec.requester}: ${rec.supplier} ${money(amount)} job ${rec.job} → ${rec.tierLabel}${rec.retrospective ? ' [RETROSPECTIVE]' : ''}`);
 
       if (!chain.length) {
@@ -730,12 +811,14 @@ module.exports = function registerPurchaseOrders(app, deps) {
   function detailsHtml(rec) {
     const rows = [
       ['Requester', rec.requester], ['Job', `${rec.job} — ${rec.jobDescription}`],
-      ['Supplier', rec.supplier], ['For', rec.description], ['Amount', money(rec.amount)],
+      ['Supplier', rec.supplier],
+      rec.lineItems?.length ? ['Items', rec.lineItems.map(lineText).join('\n')] : ['For', rec.description],
+      ['Amount', money(rec.amount)],
       ['Requested', nzTime(rec.requestedAt)], ['Request', rec.id]
     ];
     return (rec.retrospective
       ? `<div class="flag">Retrospective — already purchased${rec.purchaseDate ? ` (${escHtml(rec.purchaseDate)})` : ''}</div>` : '')
-      + `<dl>${rows.map(([k, v]) => `<dt>${k}</dt><dd>${escHtml(v)}</dd>`).join('')}</dl>`
+      + `<dl>${rows.map(([k, v]) => `<dt>${k}</dt><dd>${escHtml(v).replace(/\n/g, '<br>')}</dd>`).join('')}</dl>`
       + chainHtml(rec);
   }
 

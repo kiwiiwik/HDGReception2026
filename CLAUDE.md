@@ -130,9 +130,18 @@ Three things this mode has to get right, all handled in `index.js`:
    summary (the outcome isn't known while it's still ringing); `/dial-result` sends it.
 
 ## Purchase Orders (HDG — POC)
-Staff ring Lauren and say "purchase order", "PO" or "PO number". She asks what, how much, which
-supplier, which job, then calls the `SubmitPurchaseOrder` tool → `POST /purchase-order/hdg`. All
-logic is in `azure-webapp/purchase-orders.js`; config is `purchaseOrders` in `hdg/config.json`.
+Staff ring Lauren and say "purchase order", "PO" or "PO number". She takes the items **one line
+at a time**: each is saved with `AddLineItem` (`POST /po-line/hdg/add`, also `/change`, `/remove`)
+and echoed back, so every quantity is checked as it's given. Then she asks for cost, supplier and
+job, and calls `SubmitPurchaseOrder` (`POST /purchase-order/hdg`). The server holds the lines per
+call (in memory, keyed by call SID). The final check is just the totals ("7 items, about $1,280 at
+Bunnings, Westfield job — shall I send it?"), and only a call carrying the caller's own yes
+(`Caller_Confirmation`) submits. Tools are managed by `scripts/add-po-tool-hdg.js`. All logic is in
+`azure-webapp/purchase-orders.js`; config is `purchaseOrders` in `hdg/config.json`.
+
+Why line by line: a long list spoken in one go was cut off by line noise (~40 s read-back), and
+passing it as one long tool argument made Flash Lite speak the tool call aloud as code. A
+single-`Description` path remains as a fallback (long ones are texted to the caller to check).
 
 - **Requester** = caller ID matched against `callee_list.txt` phones. Not staff → refused.
 - **Job** validated against `hdg/jobs.csv` by number, or by name if exactly one job matches. The

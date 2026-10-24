@@ -175,6 +175,13 @@ On WebSocket open, the bridge sends `conversation_initiation_client_data`:
 - `custom_llm_extra_body` — `caller_name`, `caller_id` for mid-call LLM use
 - **Do NOT use `dynamic_variables`** — causes ElevenLabs disconnects
 
+When the agent ends the conversation (`end_call`, or its 20 s silence timeout), ElevenLabs closes
+its socket but Twilio's stream stays open. Until 2026-10-25 this left callers on a silent live
+line. The bridge now sends Twilio a `mark`, and when it echoes back (the goodbye has played),
+or after 15 s, it hangs up via the REST API (`Status=completed`). It does **not** hang up when
+the disconnect is part of a transfer: `transferCall()` records the redirect in `redirectedCalls`
+(60 s grace, cleared when the call's next stream starts), and ring-reclaim uses `pendingReclaim`.
+
 ## Known Callers — Per Business
 - On Azure: `/home/data/{businessId}/known_callers.txt` (persists across deploys)
 - Locally: falls back to `azure-webapp/businesses/{businessId}/known_callers.txt`

@@ -402,12 +402,27 @@ async function transferCall(callSid, toNumber, extraParams = {}) {
   const transferUrl = `${transferUrlBase}?${query.toString()}`;
 
   console.log(`[Twilio] Transfer URL: ${transferUrl}`);
+  // Mark before redirecting: the agent's socket can close a moment before Twilio's
+  // 'stop' arrives, and the bridge must not hang up a call that is being transferred.
+  redirectedCalls.set(callSid, Date.now());
   await axios.post(
     `https://api.twilio.com/2010-04-01/Accounts/${twilioSid}/Calls/${callSid}.json`,
     new URLSearchParams({ Url: transferUrl, Method: 'POST' }),
     { auth: { username: twilioSid, password: twilioAuth } }
   );
   console.log(`[Twilio] Transfer initiated to ${toNumber} for call ${callSid}`);
+}
+
+// Ends the phone call. Used when the agent finishes the conversation (end_call, or its
+// silence timeout): ElevenLabs closes its socket but Twilio's media stream would stay
+// open, leaving the caller on a silent line — found 2026-10-24 still up half an hour later.
+async function hangUpCall(callSid) {
+  const twilioSid = process.env.TWILIO_ACCOUNT_SID;
+  await axios.post(
+    `https://api.twilio.com/2010-04-01/Accounts/${twilioSid}/Calls/${callSid}.json`,
+    new URLSearchParams({ Status: 'completed' }),
+    { auth: { username: twilioSid, password: process.env.TWILIO_ACCOUNT_AUTH } }
+  );
 }
 
 // ── Call state ────────────────────────────────────────────────────────────────
@@ -426,6 +441,12 @@ const transcriptSent = new Set();
 // owns the decision about when the transcript actually goes out.
 const pendingReclaim = new Map();
 
+// redirectedCalls: call_sid → timestamp of the last Twilio redirect (transfer or failover).
+// A redirect pulls the call off the media stream; the bridge treats an agent disconnect
+// within REDIRECT_GRACE_MS of one as part of that hand-off, not the end of the call.
+const redirectedCalls = new Map();
+const REDIRECT_GRACE_MS = 60 * 1000;
+
 setInterval(() => {
   const twoHoursAgo = Date.now() - 2 * 60 * 60 * 1000;
   for (const [sid, data] of activeCallStore) {
@@ -436,6 +457,9 @@ setInterval(() => {
   }
   for (const [sid, ts] of pendingReclaim) {
     if (ts < twoHoursAgo) pendingReclaim.delete(sid);
+  }
+  for (const [sid, ts] of redirectedCalls) {
+    if (ts < twoHoursAgo) redirectedCalls.delete(sid);
   }
 }, 30 * 60 * 1000);
 
@@ -1322,6 +1346,43 @@ wss.on('connection', (twilioWs, req) => {
   let conversationStarted = false;
   let failedOver = false;
   let twilioStopped = false;
+  let hangupStarted = false;
+  let hangupFallback = null;
+
+  // The agent ended the conversation. Let Twilio finish playing whatever audio is
+  // buffered (the goodbye), then hang up. Twilio echoes a 'mark' once everything sent
+  // before it has played; the timer covers a mark that never comes back.
+  function endCallAfterPlayback() {
+    if (hangupStarted || twilioStopped || failedOver || !wsCallSid) return;
+    const redirectedAt = redirectedCalls.get(wsCallSid);
+    if (pendingReclaim.has(wsCallSid) || (redirectedAt && Date.now() - redirectedAt < REDIRECT_GRACE_MS)) {
+      console.log(`[WS:${businessId}] Agent disconnected during a transfer — leaving the call to Twilio`);
+      return;
+    }
+    hangupStarted = true;
+    try {
+      twilioWs.send(JSON.stringify({ event: 'mark', streamSid, mark: { name: 'agent-ended' } }));
+    } catch (e) { /* socket already gone — the fallback still hangs up */ }
+    hangupFallback = setTimeout(hangUpNow, 15000);
+  }
+
+  let hungUp = false;
+  function hangUpNow() {
+    clearTimeout(hangupFallback);
+    if (hungUp || !hangupStarted || twilioStopped) return; // once only; caller may have hung up already
+    hungUp = true;
+    hangUpCall(wsCallSid)
+      .then(() => {
+        console.log(`[WS:${businessId}] Agent ended the conversation — call ${wsCallSid} hung up`);
+        logInteraction(`[Hangup:${businessId}] Agent ended the conversation — call ${wsCallSid} hung up`);
+      })
+      .catch(err => {
+        // REST failed — closing the stream ends <Connect>, and with no TwiML after it Twilio hangs up
+        console.error(`[WS:${businessId}] Hang-up via API failed (${err.message}) — closing the stream instead`);
+        logInteraction(`[ERROR] Hang-up via API failed (${businessId}, ${wsCallSid}): ${err.message}`);
+        twilioWs.close();
+      });
+  }
 
   // Once per stream. Leaves twilioWs open when the redirect succeeds — closing the
   // stream first would end <Connect>, and Twilio would hang up before the redirect lands.
@@ -1462,6 +1523,8 @@ wss.on('connection', (twilioWs, req) => {
         if (!conversationStarted) {
           const reason = String(reasonBuf || '') || lastElevenLabsError || 'no reason given';
           failOver(customParameters, `WebSocket closed before conversation started (code ${code}: ${reason})`);
+        } else {
+          endCallAfterPlayback();
         }
       });
 
@@ -1479,6 +1542,9 @@ wss.on('connection', (twilioWs, req) => {
           callStartTime = Date.now();
           const customParameters = data.start.customParameters || {};
           wsCallSid = customParameters.call_sid || null;
+          // A new stream on this call means any earlier redirect (e.g. the ring-reclaim
+          // dial) has completed — this leg's disconnect is a real end of conversation.
+          if (wsCallSid) redirectedCalls.delete(wsCallSid);
 
           // Resolve business here — stream params are reliable (message body, not URL).
           // URL query param is preferred if present; stream param is the reliable fallback.
@@ -1504,9 +1570,13 @@ wss.on('connection', (twilioWs, req) => {
             audioQueue.push(pcmB64);
           }
           break;
+        case 'mark':
+          if (data.mark?.name === 'agent-ended') hangUpNow(); // goodbye has finished playing
+          break;
         case 'stop':
           console.log(`[WS:${businessId}] Twilio stream stopped`);
           twilioStopped = true;
+          clearTimeout(hangupFallback);
           if (elevenLabsWs) elevenLabsWs.close();
           // No conversation happened; the transcript lookup would fall back to
           // "most recent conversation" and email some other caller's transcript.

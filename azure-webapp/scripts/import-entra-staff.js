@@ -17,6 +17,7 @@
 //     blank phone is filled in from Entra
 //   - a phone that differs from Entra is reported, not changed
 //   - Entra users not already listed are added, role = job title
+//   - anyone in businesses/{id}/entra-exclude.txt (one email per line) is never added
 // Only mobilePhone is used: businessPhones are often the shared office line, and two
 // staff with the same number would be indistinguishable to caller ID.
 
@@ -74,8 +75,14 @@ const csvSafe = s => String(s || '').replace(/,/g, ' ').replace(/\s+/g, ' ').tri
     users.push(...r.value);
     url = r['@odata.nextLink'];
   }
-  const withMobile = users.filter(u => u.accountEnabled && u.userType !== 'Guest' && u.mobilePhone);
-  console.log(`Entra: ${users.length} users, ${withMobile.length} enabled members with a mobile number\n`);
+  // entra-exclude.txt: people deliberately kept off the list, so a re-run doesn't re-add them
+  const excludePath = path.join(path.dirname(listPath), 'entra-exclude.txt');
+  const excluded = new Set(fs.existsSync(excludePath)
+    ? fs.readFileSync(excludePath, 'utf-8').split(/\r?\n/).map(l => l.trim().toLowerCase()).filter(l => l && !l.startsWith('#'))
+    : []);
+  const isExcluded = u => [u.mail, u.userPrincipalName].some(e => e && excluded.has(e.toLowerCase()));
+  const withMobile = users.filter(u => u.accountEnabled && u.userType !== 'Guest' && u.mobilePhone && !isExcluded(u));
+  console.log(`Entra: ${users.length} users, ${withMobile.length} enabled members with a mobile number (${excluded.size} excluded by entra-exclude.txt)\n`);
 
   const lines = fs.readFileSync(listPath, 'utf-8').replace(/\r\n/g, '\n').replace(/\n+$/, '').split('\n');
   const [header, ...rows] = lines;
@@ -87,7 +94,13 @@ const csvSafe = s => String(s || '').replace(/,/g, ' ').replace(/\s+/g, ' ').tri
     const phone = toE164(u.mobilePhone);
     const existing = entries.find(e => e.email && e.email.toLowerCase() === email.toLowerCase())
       || entries.find(e => e.phone && digits(e.phone) === digits(phone));
-    if (!existing) {
+    const sameName = entries.find(e => e.name.toLowerCase() === csvSafe(u.displayName).toLowerCase());
+    if (!existing && sameName) {
+      // Same person under another address (Susan Liu's gibcon.onmicrosoft.com account).
+      // Adding would create a second entry with the same name, and the staff directory
+      // keeps the last one — silently replacing the curated line.
+      conflicts.push(`${u.displayName}: already listed as ${sameName.email} — Entra has ${email}, ${phone}; not added`);
+    } else if (!existing) {
       const e = { name: csvSafe(u.displayName), email, phone, role: csvSafe(u.jobTitle) };
       e.line = [e.name, e.email, e.phone, e.role].join(',');
       entries.push(e); added.push(e);

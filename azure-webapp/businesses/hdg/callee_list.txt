@@ -1,5 +1,5 @@
 Name,email,phone,role
-Aholoka Afu,Aholoka.Afu@gibbonsrail.co.nz,,Leading Hand
+Aholoka Afu,Aholoka.Afu@gibbonsrail.co.nz,+64223202784,Leading Hand
 Arol Lucindo,arol.lucindo@gibbonsrail.co.nz,+64275638123,Leading Hand
 Dave Ballard,dave.ballard@hdg.co.nz,+6421842278,Operations Manager
 David Harris,david.harris@hdg.co.nz,+64272363388,Supervisor
@@ -28,4 +28,5 @@ Shaun Harris,shaun.harris@gibbonsrail.co.nz,+64275362272,
 Steve Coleman,steve.coleman@hdg.co.nz,+64226581054,Site Foreman
 Susan Liu,susan.liu@hdg.co.nz,,Management Accountant (no longer active - redirect to Diana Chichester)
 Toan Nguyen,toan.nguyen@hdg.co.nz,+64220110194,Quantity Surveyor / Engineer
+Vijayarajan Rajabather,vijay.rajabather@totalrail.co.nz,+64225003902,Project Engineer
 Willie Fotu,willie.fotu@hdg.co.nz,+64274654667,Site Supervisor

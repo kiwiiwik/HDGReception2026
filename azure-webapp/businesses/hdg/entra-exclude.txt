@@ -1,0 +1,5 @@
+# Entra ID users that import-entra-staff.js must never add to callee_list.txt.
+# One email address per line (matched case-insensitively).
+paul.mcgahan@gibbonsrail.co.nz
+setu.taituave@gibbonsrail.co.nz
+susan.liu@gibcon.onmicrosoft.com

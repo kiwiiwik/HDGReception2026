@@ -632,6 +632,22 @@ module.exports = function registerPurchaseOrders(app, deps) {
       const callKey = call_sid || caller_id;
       const lines = (lineItems.get(callKey)?.items || []).map(l => ({ ...l }));
       if (lines.length) Description = lines.map(lineText).join('; ');
+
+      // A re-send of an order already submitted on this call. Submitting clears the saved
+      // lines, so without this the agent's habitual re-fire would be told the items are
+      // missing and start asking for them again. Matched on amount and supplier, both
+      // given — a new order on the same call starts with AddLineItem and differs.
+      const sameText = (a, b) => String(a).toLowerCase().replace(/[^a-z0-9]/g, '') === String(b).toLowerCase().replace(/[^a-z0-9]/g, '');
+      if (!lines.length && call_sid && Supplier && parseAmount(Amount) > 0) {
+        const earlier = loadRegister(business).requests.find(r => r.callSid === call_sid
+          && r.amount === parseAmount(Amount) && sameText(r.supplier, Supplier));
+        if (earlier) {
+          return reply(earlier.status, earlier.poNumber
+            ? `Already approved as ${earlier.poNumber}. Do not submit again.`
+            : 'Already submitted for approval. Do not submit again.', { po_number: earlier.poNumber || '' });
+        }
+      }
+
       const missing = [
         !Description && ['the items', 'Read me the items one at a time. What\'s the first one?'],
         !(parseAmount(Amount) > 0) && ['the cost', 'How much will it cost?'],

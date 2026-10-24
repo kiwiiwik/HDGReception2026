@@ -596,19 +596,42 @@ module.exports = function registerPurchaseOrders(app, deps) {
       // skips it — and on 2026-10-24 submitted "PEO" (a misheard "PO") as the item.
       // So the first complete call only returns the sentence to read back; the same
       // details sent again (after the caller says yes) are what actually submit.
-      // Keyed loosely: the agent rewords between calls ("Stephenson's" / "Stephensons",
-      // "a plate compactor" / "plate compactor"), and a strict key would loop the read-back.
-      // A corrected description alone submits without a second read-back.
-      const confirmKey = [job.job, amount, String(Supplier).toLowerCase().replace(/[^a-z0-9]/g, '')].join('|');
+      // Keyed on letters and digits only, so punctuation and case changes between calls
+      // ("Stephenson's" / "Stephensons") don't loop the read-back. The description is in
+      // the key so a corrected item list is checked again before it submits — the agent
+      // resends the description verbatim, so this doesn't loop in practice.
+      const loose = s => String(s).toLowerCase().replace(/[^a-z0-9]/g, '');
+      const confirmKey = [job.job, amount, loose(Supplier), loose(Description)].join('|');
       const callKey = call_sid || caller_id;
       if (awaitingConfirm.get(callKey)?.key !== confirmKey) {
         awaitingConfirm.set(callKey, { key: confirmKey, at: Date.now() });
-        // The full item list with quantities is read back — the PO has to be right, so the
-        // caller confirms every line. The question comes first as well as last: on
-        // 2026-10-24 a long read-back was cut off before "Is that right?", and caller and
-        // agent waited in silence until the call timed out.
         const spokenAmount = Number.isInteger(amount) ? `$${amount}` : money(amount);
         const jobName = job.description.split(/[\s(]+/)[0]; // "Westfield siding renewal" → "Westfield"
+
+        // Long lists are texted, not read out. Spoken in full, a 7-item order took ~40s
+        // and background noise on a site phone interrupted it every time (2026-10-24) —
+        // and a caller can check quantities far better in writing than by ear.
+        if (Description.length > (po.textReadbackOver || 80)) {
+          const sig = po.smsSignature || business.config.displayName;
+          try {
+            await sendSms({ to: staff.phone, body:
+              `${sig} PO check: ${money(amount)} at ${Supplier}, job ${job.job} ${job.description}.\n` +
+              `Items: ${Description}\n` +
+              `If this is all correct, say yes to ${business.config.receptionistName} on the call.` });
+            logInteraction(`[PO:${business.config.id}] Read-back texted to ${staff.phone} (${Description.length} chars)`);
+            return reply('confirm',
+              `Nothing has been submitted yet. The full item list has just been texted to the caller. Say exactly this, then stop and wait for their answer: ` +
+              `"That's ${spokenAmount} at ${Supplier}, on the ${jobName} job. I've just texted you the full list of items. Can you check it's all correct?" ` +
+              `If they say yes, call this tool again with exactly the same details to submit it. ` +
+              `If any item or quantity is wrong, get the correction and call again with the corrected item list.`);
+          } catch (e) {
+            // No text, no shortcut — fall through to reading the whole list out
+            logInteraction(`[ERROR] PO read-back SMS failed (${staff.phone}): ${e.message} — reading it out instead`);
+          }
+        }
+
+        // Short lists (and failed texts): the full item list is read back. The question
+        // comes first as well as last, so a cut-off still leaves it asked.
         return reply('confirm',
           `Nothing has been submitted yet. Say exactly this to the caller, all of it, every item and quantity, then stop and wait for their answer: ` +
           `"Can I just check this is right? ${spokenAmount} at ${Supplier}, on the ${jobName} job, for: ${Description}. Is that all correct?" ` +

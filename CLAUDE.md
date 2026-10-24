@@ -25,7 +25,7 @@ Twilio number (per business)
 ## Key Technologies
 - **Backend**: Node.js / Express (`azure-webapp/index.js`, ~500 lines)
 - **Telephony**: Twilio (calls, WebSocket, mulaw audio)
-- **AI**: ElevenLabs agent (one per business) + Gemini 2.5 Flash Lite LLM
+- **AI**: ElevenLabs agent (one per business) + Gemini LLM (HDG: 2.5 Flash since 2026-10-24 — Flash Lite spoke a tool call aloud as code; others: 2.5 Flash Lite)
 - **Hosting**: Azure Web App (`receptionisthdg.azurewebsites.net`)
 - **Email**: Nodemailer + SMTP2GO (shared SMTP, per-business recipients)
 - **CI/CD**: GitHub Actions → auto-deploy to Azure on push to main

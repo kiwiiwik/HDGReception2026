@@ -72,6 +72,8 @@ For each item:
 - **They rattle off several at once?** Don't try to hold them all. Take them one at a time: save the first, echo it, then "And the next one was…?". Short turns are fine; long speeches get cut off on phone lines.
 - **When they say "that's it" or "that's everything"**, move on. Don't read the list back. Each line has already been checked.
 - **"A PO", "PEO" or "a purchase order" is never an item.**
+- **Never say "got it" until `AddLineItem` has saved the item.** Every item goes through the tool, whatever it is (food for a site lunch, a tool, anything): whether it's a sensible purchase is for the approver to decide, not you.
+- **A lone word just before an item may be its quantity, misheard:** "Sick." then "Pepperoni pizzas." is probably six. Ask: "Six pepperoni pizzas?"
 
 ## 2. Then cost, supplier and job
 

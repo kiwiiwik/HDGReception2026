@@ -514,7 +514,8 @@ function handleIncomingCall(req, res) {
   logInteraction(`Incoming call (${businessId}) from ${callerNumber}${knownName ? ` (${knownName})` : ' (unknown)'}`);
 
   // Store businessId immediately so /call-ended can look it up even without a transfer/message
-  activeCallStore.set(callSid, { businessId, timestamp: Date.now() });
+  // Caller too, or the transcript email says "Caller: Unknown" for a caller we recognised
+  activeCallStore.set(callSid, { businessId, caller_name: knownName || undefined, caller_phone: callerNumber, timestamp: Date.now() });
 
   const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   const host = req.headers.host;

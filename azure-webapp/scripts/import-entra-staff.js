@@ -1,6 +1,5 @@
 // import-entra-staff.js — adds every enabled Entra ID user with a mobile number to a
-// business's staff list (callee_list.txt), so they can be put through to and can raise
-// purchase orders.
+// business's staff list (callee_list.txt), so callers can be put through to them.
 //
 //   node scripts/import-entra-staff.js --env "C:/Code/HDG SharePoint/.env"           # dry run
 //   node scripts/import-entra-staff.js --env "C:/Code/HDG SharePoint/.env" --write   # apply

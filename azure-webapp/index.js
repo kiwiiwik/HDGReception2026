@@ -201,14 +201,6 @@ function loadBusiness(businessId) {
     // knowledge.md is optional — no warning needed
   }
 
-  // Optional job list (purchase-order businesses). Appended to the prompt so the agent
-  // can resolve "the Westfield job" to a number; /purchase-order validates against it.
-  const jobs = loadJobList(path.join(dir, 'jobs.csv'));
-  if (jobs.length) {
-    const jobLines = jobs.map(j => `- ${j.job}: ${j.description}`).join('\n');
-    knowledge += `${knowledge ? '\n\n' : ''}# Job List\n\nThe only valid job numbers:\n\n${jobLines}`;
-  }
-
   const validPhoneNumbers = new Set(
     Object.values(calleeDirectory).map(e => e.phone).filter(Boolean)
   );
@@ -216,24 +208,9 @@ function loadBusiness(businessId) {
   if (config.failoverNumber) validPhoneNumbers.add(config.failoverNumber);
 
   return {
-    config, calleeDirectory, knownCallers, knownCallersPath, prompts, knowledge, validPhoneNumbers, jobs,
+    config, calleeDirectory, knownCallers, knownCallersPath, prompts, knowledge, validPhoneNumbers,
     dataDir: path.dirname(knownCallersPath)
   };
-}
-
-// jobs.csv: header row, then one job per line. Columns are named by the header, so role
-// columns (Supervisor, ProjectManager, Director) can be added without code changes —
-// each becomes a property keyed by its header with a lower-case first letter.
-function loadJobList(jobsPath) {
-  if (!fs.existsSync(jobsPath)) return [];
-  const lines = fs.readFileSync(jobsPath, 'utf-8').split('\n')
-    .map(l => l.trim())
-    .filter(l => l && !l.startsWith('#'));
-  if (!lines.length) return [];
-  const keys = lines[0].split(',').map(h => h.trim()).map(h => h.charAt(0).toLowerCase() + h.slice(1));
-  return lines.slice(1)
-    .map(l => Object.fromEntries(l.split(',').map((v, i) => [keys[i], v.trim()])))
-    .filter(j => j.job);
 }
 
 function loadAllBusinesses() {
@@ -846,11 +823,6 @@ app.post('/send-text',     handleSendText);
 // Legacy /send-email alias — kept for backward compatibility
 app.post('/send-email/:businessId', handleSendMessage);
 app.post('/send-email',             handleSendMessage);
-
-// Purchase-order workflow: /purchase-order/:businessId (agent tool) + /po/* (approval pages)
-require('./purchase-orders')(app, {
-  getBusiness, findStaffByPhone, fillFromBridge, sendEmail, sendSms, logInteraction
-});
 
 // Twilio TwiML endpoint: validates transfer number against all business staff directories
 // Called by Twilio during an active transfer (URL set in TRANSFER_URL_BASE env var)

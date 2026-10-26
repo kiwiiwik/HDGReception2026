@@ -73,6 +73,9 @@ Optional fields:
   (signed-URL failure or agent closes before the conversation starts). The error is written
   to the daily interaction log and an alert is emailed to `fallbackEmail` (max once per 30 min).
   Without it the caller is hung up on. Must not divert back to the Twilio number (loop).
+- `recogniseCallers: false` — skip the caller-ID lookup; everyone gets the unknown-caller
+  greeting and prompt. HDG has this on since 2026-10-27 (recognised staff got silent calls,
+  cause not yet found).
 
 Note the same applies to the dashboard **System prompt**: it is a fallback for when
 overrides fail. Editing it has no effect on live calls — edit the `prompt-*.md` files.
@@ -129,45 +132,9 @@ Three things this mode has to get right, all handled in `index.js`:
 3. **No premature success email** — in ring-reclaim mode `/transfer-call` skips the call
    summary (the outcome isn't known while it's still ringing); `/dial-result` sends it.
 
-## Purchase Orders (HDG — POC)
-Staff ring Lauren and say "purchase order", "PO" or "PO number". She takes the items **one line
-at a time**: each is saved with `AddLineItem` (`POST /po-line/hdg/add`, also `/change`, `/remove`)
-and echoed back, so every quantity is checked as it's given. Then she asks for cost, supplier and
-job, and calls `SubmitPurchaseOrder` (`POST /purchase-order/hdg`). The server holds the lines per
-call (in memory, keyed by call SID). The final check is just the totals ("7 items, about $1,280 at
-Bunnings, Westfield job — shall I send it?"), and only a call carrying the caller's own yes
-(`Caller_Confirmation`) submits. Tools are managed by `scripts/add-po-tool-hdg.js`. All logic is in
-`azure-webapp/purchase-orders.js`; config is `purchaseOrders` in `hdg/config.json`.
-
-Why line by line: a long list spoken in one go was cut off by line noise (~40 s read-back), and
-passing it as one long tool argument made Flash Lite speak the tool call aloud as code. A
-single-`Description` path remains as a fallback (long ones are texted to the caller to check).
-
-- **Requester** = caller ID matched against `callee_list.txt` phones. Not staff → refused.
-- **Job** validated against `hdg/jobs.csv` by number, or by name if exactly one job matches. The
-  list is appended to Lauren's prompt too. Columns come from the header row
-  (`Job,Description,Supervisor,ProjectManager,Director`). Reload: `/reload-directory/hdg`.
-- **Roles are per job.** Each role cell holds staff names (resolved via the staff list) or emails,
-  `;` between several people (all emailed, first to decide wins). Blank → `defaultApprovers`.
-- **Cascade** (`approvalLevels`): every PO needs at least the first level — no self-approval (Karl's
-  call; `selfApproveUnder` would re-enable issuing on the call, but is unset). The request climbs
-  Site Supervisor → Project Manager → Director, stopping at the first
-  level whose `upTo` exceeds the amount ($100 / $500 / none). The next level is only emailed once
-  the one below approves. Any rejection ends it. The requester is never their own approver: their
-  level is skipped, and if it was the top one the next level up takes its place.
-- **Approval links** — `/po/review/hdg/{REQ}?s=step&a=approver&t=HMAC`, one per approver per step
-  (records who clicked; a lower level's link can't decide a higher step). GET only shows the
-  request; Approve/Reject is a POST, because mail scanners (Safe Links) prefetch every link.
-  Secret: `PO_LINK_SECRET` env, else auto-generated in `/home/data/hdg/po-link-secret`.
-- **On approval** — sequential PO number (`GR-1001`…), SMS to requester (MessageMedia = Sinch
-  Engage; Twilio can't send NZ SMS), summary email to `accountsEmail`.
-- **Register** — `/home/data/hdg/po-register.json` is the source of truth (numbering is safe
-  because the app is single-instance and writes are synchronous). Optional SharePoint mirror:
-  `purchaseOrders.sharePoint = { site, list }` + `GRAPH_TENANT_ID/CLIENT_ID/CLIENT_SECRET`;
-  create the list with `scripts/create-po-sharepoint-list.js`.
-- Requester also gets an outcome email (to their staff-list address, or `testRequesterEmail` —
-  POC only, currently worker@totalrail.co.nz; the test aliases all land in rod.grant@hdg.co.nz).
-- Tool attached to the agent with `scripts/add-po-tool-hdg.js --create` (dry run without flag).
+## Purchase Orders
+Not handled here. POs moved to a separate system on its own Twilio number (`C:CodeVPO`,
+agent Sarah). Lauren is a receptionist only: no PO tools, prompt sections, routes or `jobs.csv`.
 
 ## How Prompt Selection Works (server-side)
 At call time, Node.js checks:

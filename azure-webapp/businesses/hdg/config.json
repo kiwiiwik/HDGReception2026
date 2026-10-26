@@ -14,6 +14,8 @@
   "emailRecipients": ["rod.grant@hdg.co.nz"],
   "fallbackEmail": "rod.grant@i6.co.nz",
   "failoverNumber": "+6421747268",
+  "_recogniseCallers_note": "Stopgap 2026-10-27: recognised staff got silent calls, so caller lookup is off. Remove both lines to greet known callers by name again.",
+  "recogniseCallers": false,
   "purchaseOrders": {
     "poPrefix": "GR-",
     "firstPoNumber": 1001,

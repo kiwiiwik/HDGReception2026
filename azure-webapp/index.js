@@ -508,7 +508,9 @@ function handleIncomingCall(req, res) {
 
   const callerNumber = req.body.From || req.body.Caller || '';
   const callSid = req.body.CallSid || '';
-  const knownName = knownCallerName(business, callerNumber);
+  // "recogniseCallers": false treats everyone as unknown (generic greeting, asks their name).
+  // Stopgap from 2026-10-27: recognised HDG staff were getting silent calls.
+  const knownName = business.config.recogniseCallers === false ? '' : knownCallerName(business, callerNumber);
 
   console.log(`[Incoming:${businessId}] From ${callerNumber}${knownName ? ` (${knownName})` : ' (unknown)'}, SID: ${callSid}`);
   logInteraction(`Incoming call (${businessId}) from ${callerNumber}${knownName ? ` (${knownName})` : ' (unknown)'}`);
